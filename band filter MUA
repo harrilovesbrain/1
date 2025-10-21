@@ -1,81 +1,88 @@
 %% ================================================================
-%  filterMUA_full.m
-%  Author: Harry Lee (Buzsáki Lab)
-%  Purpose: From a raw .dat file, extract MUA band (500–5000 Hz),
-%           rectify, smooth, downsample, and save .MUA.mat
+%  filterMUA_fixed.m
+%  Purpose: Extract MUA envelope (500–5000 Hz band)
+%           from a .dat file using your sessionInfo structure.
 % ================================================================
 
 clear; clc;
 
-%% 1️⃣  SELECT SESSION
-%  Change this to your own session folder and file:
-fileDat = 'Z:\Buzsakilabspace\LabShare\JunH\Photometry\HJ017\250903\HJ017_250903_060719\HJ017_250903_060719.dat';
-load('Z:\Buzsakilabspace\LabShare\JunH\Photometry\HJ017\250903\HJ017_250903_060719\HJ017_250903_060719_sessionInfo.mat');
+%% 1️⃣  Load session information
+% Change these paths for your session
+basepath = 'Z:\Buzsakilabspace\LabShare\JunH\Photometry\HJ017\250903\HJ017_250903_060719';
+fileDat  = fullfile(basepath, 'HJ017_250903_060719.dat');
+load(fullfile(basepath, 'HJ017_250903_060719_sessionInfo.mat'));
 
-fs        = sessionInfo.rates.wideband;   % raw sampling rate (Hz)
-nChannels = sessionInfo.nChannels;        % total channels
-channels  = 1:nChannels;                  % channels to process
+% --- Handle structure differences ---
+if isfield(sessionInfo.rates, 'wideband')
+    fs = sessionInfo.rates.wideband;      % normal field
+elseif isfield(sessionInfo.session, 'SampleRate')
+    fs = sessionInfo.session.SampleRate;  % alternate field
+else
+    error('Sampling rate not found in sessionInfo!');
+end
 
-fprintf('Loaded session %s  |  %d ch  @  %.0f Hz\n', ...
-        sessionInfo.FileName, nChannels, fs);
+nChannels = sessionInfo.nChannels;
+channels  = sessionInfo.channels;         % use exactly as stored (0-based!)
+targetFs  = sessionInfo.lfpSampleRate;    % match .lfp rate (1250 Hz)
+dsFactor  = round(fs / targetFs);
 
-%% 2️⃣  DEFINE FILTER PARAMETERS
-lowCut  = 500;          % lower cutoff (Hz)
-highCut = 5000;         % upper cutoff (Hz)
-order   = 3;            % Butterworth order
-[b,a]   = butter(order, [lowCut highCut]/(fs/2), 'bandpass');
+fprintf('Loaded %s  |  %d channels  |  fs=%.0f Hz  |  target=%.0f Hz\n', ...
+    sessionInfo.FileName, nChannels, fs, targetFs);
 
-targetFs = 1250;                     % desired downsampled rate
-dsFactor = round(fs/targetFs);       % downsample ratio
+%% 2️⃣  Design band-pass filter (500–5000 Hz)
+lowCut  = 500;
+highCut = 5000;
+order   = 3;
+[b,a]   = butter(order, [lowCut highCut] / (fs/2), 'bandpass');
 
-%% 3️⃣  PROCESS EACH CHANNEL
-mua_cell = cell(numel(channels),1);
+%% 3️⃣  Process each channel
+mua_cell = cell(numel(channels), 1);
 
 for k = 1:numel(channels)
     ch = channels(k);
-    fprintf('Filtering channel %d/%d ...\n', ch, nChannels);
+    fprintf('Processing channel %d of %d...\n', ch, nChannels);
 
-    % ---- Load raw signal from .dat ----
+    % Load one channel from .dat file
     raw = bz_LoadBinary(fileDat, ...
         'channels', ch, ...
         'nChannels', nChannels, ...
         'precision', 'int16');
 
-    % ---- Step 1: Band-pass filter (500–5000 Hz) ----
-    sig_bp = filtfilt(b,a,double(raw));
+    % Step 1: Band-pass filter (500–5000 Hz)
+    sig_bp = filtfilt(b, a, double(raw));
 
-    % ---- Step 2: Rectify (absolute value) ----
+    % Step 2: Rectify (absolute value)
     sig_rect = abs(sig_bp);
 
-    % ---- Step 3: Smooth (≈2 ms Gaussian window) ----
-    win = round(fs * 0.002);                % 2 ms window
-    sig_env = smoothdata(sig_rect,'gaussian',win);
+    % Step 3: Smooth (≈2 ms Gaussian)
+    win = round(fs * 0.002);
+    sig_env = smoothdata(sig_rect, 'gaussian', win);
 
-    % ---- Step 4: Downsample to 1.25 kHz ----
+    % Step 4: Downsample (to match LFP rate)
     sig_env_ds = downsample(sig_env, dsFactor);
 
-    % ---- Store result ----
+    % Store in cell array
     mua_cell{k} = single(sig_env_ds);
 end
 
-%% 4️⃣  COMBINE ALL CHANNELS INTO ONE MATRIX
+%% 4️⃣  Combine all channels into matrix
 minLen = min(cellfun(@numel, mua_cell));
 MUA.data     = zeros(minLen, numel(channels), 'single');
 for k = 1:numel(channels)
     MUA.data(:,k) = mua_cell{k}(1:minLen);
 end
-MUA.fs       = fs/dsFactor;
+MUA.fs       = targetFs;
 MUA.band     = [lowCut highCut];
 MUA.channels = channels;
 
-%% 5️⃣  SAVE RESULT
-outFile = fullfile(fileparts(fileDat), [sessionInfo.FileName '.MUA.mat']);
+%% 5️⃣  Save MUA file
+outFile = fullfile(basepath, [sessionInfo.FileName '.MUA.mat']);
 save(outFile, 'MUA', '-v7.3');
-fprintf('\n✅ Saved MUA file:\n%s\n', outFile);
+fprintf('\n✅ Saved %s\n', outFile);
 
-%% 6️⃣  QUICK VISUAL CHECK
+%% 6️⃣  Quick check plot
 figure;
 imagesc(zscore(MUA.data,[],1)'); axis xy;
-xlabel('Time (samples)'); ylabel('Channel (1=superficial)');
-title(sprintf('MUA Envelope  (%d – %d Hz band)', lowCut, highCut));
+xlabel('Time (samples)'); ylabel('Channel (superficial → deep)');
+title(sprintf('MUA Envelope (%d–%d Hz)', lowCut, highCut));
 colormap jet; colorbar;
