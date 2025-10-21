@@ -6,7 +6,7 @@ function funcAuto_bzLFPfromDat(mouseName)
 %
 % ==========================================
 
-rootDir = fullfile('\\Buzsakilabspace\LabShare\JunH\Photometry', mouseName);
+rootDir = fullfile('Z:\Buzsakilabspace\LabShare\JunH\Photometry', mouseName);
 if ~isfolder(rootDir)
     error('Mouse folder not found: %s', rootDir);
 end
