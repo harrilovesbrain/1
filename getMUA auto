@@ -1,0 +1,71 @@
+function funcAuto_filterMUAfromDat(mouseName)
+% ================================================================
+% funcAuto_filterMUAfromDat
+% Purpose: Batch run filterMUA_fixed for all .dat files
+%          under a given mouse folder.
+%
+% Usage:
+%   funcAuto_filterMUAfromDat('HJ017')
+%
+% created by Husang Harry Lee
+% Notes:
+%   - Skips sessions that already have .MUA.mat file
+%   - Searches recursively through date and subfolders
+% ================================================================
+
+rootDir = fullfile('Z:\Buzsakilabspace\LabShare\JunH\Photometry', mouseName);
+if ~isfolder(rootDir)
+    error('Mouse folder not found: %s', rootDir);
+end
+
+fprintf('\n🐭 Mouse: %s\n', mouseName);
+
+dateFolders = dir(rootDir);
+dateFolders = dateFolders([dateFolders.isdir] & ~startsWith({dateFolders.name}, '.'));
+
+for d = 1:numel(dateFolders)
+    datePath = fullfile(rootDir, dateFolders(d).name);
+    fprintf('\n📅 Date: %s\n', dateFolders(d).name);
+
+    % Case 1: .dat directly in date folder
+    cd(datePath);
+    if ~isempty(dir('*.dat'))
+        processSessionFolder(datePath);
+    end
+
+    % Case 2: .dat inside subfolders (task, pre, post, etc.)
+    subFolders = dir(datePath);
+    subFolders = subFolders([subFolders.isdir] & ~startsWith({subFolders.name}, '.'));
+    for s = 1:numel(subFolders)
+        subPath = fullfile(datePath, subFolders(s).name);
+        cd(subPath);
+        if ~isempty(dir('*.dat'))
+            processSessionFolder(subPath);
+        end
+    end
+end
+
+fprintf('\n🎉 Finished processing all available sessions for %s.\n', mouseName);
+end
+
+
+% --- helper function ---
+function processSessionFolder(sessionPath)
+    fprintf('   → Session: %s\n', sessionPath);
+    [~, baseName] = fileparts(sessionPath);
+    muaPath = fullfile(sessionPath, [baseName '.MUA.mat']);
+
+    if exist(muaPath, 'file')
+        fprintf('     ⏭️  MUA already exists, skipping.\n');
+        return;
+    end
+
+    try
+        cd(sessionPath);
+        fprintf('     ⚙️  Running filterMUA_fixed ...\n');
+        filterMUA_fixed(sessionPath);   % <---- your custom function
+        fprintf('     ✅ Done: %s\n', baseName);
+    catch ME
+        fprintf('     ❌ Error in %s: %s\n', sessionPath, ME.message);
+    end
+end
