@@ -8,9 +8,9 @@ clear; clc;
 
 %% 1️⃣  Load session information
 % Change these paths for your session
-basepath = 'Z:\Buzsakilabspace\LabShare\JunH\Photometry\HJ017\250903\HJ017_250903_060719';
-fileDat  = fullfile(basepath, 'HJ017_250903_060719.dat');
-load(fullfile(basepath, 'HJ017_250903_060719_sessionInfo.mat'));
+basepath = 'Z:\Buzsakilabspace\LabShare\JunH\Photometry\HJ017\250903\HJ017_250903_060719'; % directory
+fileDat  = fullfile(basepath, 'HJ017_250903_060719.dat'); % .dat file name
+load(fullfile(basepath, 'HJ017_250903_060719.sessionInfo.mat')); % sessionInfo file name, they should be all same
 
 % --- Handle structure differences ---
 if isfield(sessionInfo.rates, 'wideband')
@@ -43,10 +43,11 @@ for k = 1:numel(channels)
     fprintf('Processing channel %d of %d...\n', ch, nChannels);
 
     % Load one channel from .dat file
-    raw = bz_LoadBinary(fileDat, ...
-        'channels', ch, ...
-        'nChannels', nChannels, ...
-        'precision', 'int16');
+        raw = bz_LoadBinary(fileDat, ...
+    'channels', ch + 1, ...  % convert 0-based to MATLAB's 1-based indexing
+    'nChannels', nChannels, ...
+    'precision', 'int16');
+
 
     % Step 1: Band-pass filter (500–5000 Hz)
     sig_bp = filtfilt(b, a, double(raw));
