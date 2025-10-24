@@ -8,7 +8,6 @@
 %       '\\Buzsakilabspace\LabShare\JunH\Photometry\HJ017\251005\Sleep_Ach_251005_095504'};
 %   runAll_SleepScoreMaster(roots)
 %
-% Created by Husang "Harry" Lee
 % ================================================================
 
 function runAll_SleepScoreMaster(rootPaths)
