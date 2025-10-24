@@ -1,0 +1,58 @@
+%% ================================================================
+% runAll_SleepScoreMaster.m
+% Purpose: Run SleepScoreMaster on a list of session root paths.
+% Usage:
+%   roots = { ...
+%       '\\Buzsakilabspace\LabShare\JunH\Photometry\HJ017\250905\HJ017_Day3_250905_095904', ...
+%       '\\Buzsakilabspace\LabShare\JunH\Photometry\HJ017\250910\250910_Task_250910_111921', ...
+%       '\\Buzsakilabspace\LabShare\JunH\Photometry\HJ017\251005\Sleep_Ach_251005_095504'};
+%   runAll_SleepScoreMaster(roots)
+%
+% Created by Husang "Harry" Lee
+% ================================================================
+
+function runAll_SleepScoreMaster(rootPaths)
+
+if nargin < 1 || isempty(rootPaths)
+    error('Provide a cell array of full session root paths.');
+end
+
+fprintf('\n💤  Running SleepScoreMaster for %d sessions...\n', numel(rootPaths));
+
+for i = 1:numel(rootPaths)
+    root = rootPaths{i};
+    fprintf('\n[%d/%d] 🧠 %s\n', i, numel(rootPaths), root);
+
+    if ~isfolder(root)
+        fprintf('   ⚠️  Folder not found, skipping.\n');
+        continue;
+    end
+
+    % Check if already processed
+    hasSleep = ~isempty(dir(fullfile(root, '*SleepScoreMastered*.mat')));
+    if hasSleep
+        fprintf('   ⏭️  SleepScoreMastered already exists, skipping.\n');
+        continue;
+    end
+
+    try
+        cd(root);
+        fprintf('   ⚙️  Running SleepScoreMaster...\n');
+        t0 = tic;
+
+        % --- Run SleepScoreMaster (adjust arguments if you use options) ---
+        % Minimal call:
+        SleepScoreMaster(root);
+
+        % Or with typical parameters:
+        % SleepScoreMaster('basepath', root, 'figures', true, 'overwrite', false);
+
+        fprintf('   ✅  Completed (%.1f min)\n', toc(t0)/60);
+
+    catch ME
+        fprintf('   ❌  Error in %s: %s\n', root, ME.message);
+    end
+end
+
+fprintf('\n🎉 Finished running SleepScoreMaster for all roots.\n');
+end
