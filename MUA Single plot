@@ -1,0 +1,34 @@
+function plot_MUA_depth_single(sessionPath)
+%% ================================================================
+% plot_MUA_depth_single
+% Purpose: Plot normalized MUA (500–5000 Hz) power vs electrode depth
+%          for a single session (Yuta-style panel C).
+%
+% Usage:
+%   plot_MUA_depth_single('Z:\Buzsakilabspace\LabShare\JunH\Photometry\HJ017\2024-07-25\Sleep')
+% ================================================================
+
+% --- Locate the MUA file ---
+muaFile = dir(fullfile(sessionPath, '*.MUA.mat'));
+if isempty(muaFile)
+    error('No MUA file found in %s', sessionPath);
+end
+load(fullfile(muaFile(1).folder, muaFile(1).name), 'MUA');
+
+% --- Compute mean envelope power per channel ---
+meanPower = mean(MUA.data, 1);
+
+% --- Normalize to 0–1 within this session ---
+normPower = meanPower / max(meanPower);
+
+% --- Plot (superficial → deep) ---
+figure('Color','w'); hold on;
+plot(normPower, 1:numel(normPower), 'k', 'LineWidth', 2);
+set(gca, 'YDir', 'reverse');  % top = superficial
+xlabel('normalized power (500 Hz – 5 kHz)');
+ylabel('electrode site');
+title('Single-session MUA depth profile');
+box off; grid on;
+
+fprintf('✅ Plotted single-session normalized MUA depth profile (%s)\n', muaFile(1).name);
+end
