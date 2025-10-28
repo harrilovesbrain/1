@@ -1,0 +1,47 @@
+function plot_MUA_depth_across_sessions(rootDir)
+%% ================================================================
+% plot_MUA_depth_across_sessions
+% Purpose: Compute population-averaged MUA depth profile (mean ± SEM)
+%          across all .MUA.mat files (Yuta-style panel H).
+%
+% Usage:
+%   plot_MUA_depth_across_sessions('Z:\Buzsakilabspace\LabShare\JunH\Photometry\HJ017')
+% ================================================================
+
+muaFiles = dir(fullfile(rootDir, '**', '*.MUA.mat'));
+if isempty(muaFiles)
+    error('No MUA files found in %s', rootDir);
+end
+fprintf('Found %d MUA files.\n', numel(muaFiles));
+
+allProfiles = [];
+
+for i = 1:numel(muaFiles)
+    load(fullfile(muaFiles(i).folder, muaFiles(i).name), 'MUA');
+    meanPower = mean(MUA.data, 1);
+    normPower = meanPower / max(meanPower);   % normalize 0–1
+    allProfiles = [allProfiles; normPower];   %#ok<AGROW>
+end
+
+% --- Compute mean ± SEM ---
+avgProfile = mean(allProfiles, 1);
+semProfile = std(allProfiles, [], 1) / sqrt(size(allProfiles, 1));
+
+% --- Define depth axis (µm) ---
+% adjust spacing if known: e.g., 15 µm per site × N channels
+spacing = 15;  % µm
+depthAxis = (0:length(avgProfile)-1) * spacing;
+
+% --- Plot ---
+figure('Color','w'); hold on;
+fill([avgProfile - semProfile, fliplr(avgProfile + semProfile)], ...
+     [depthAxis, fliplr(depthAxis)], [0.85 0.85 0.85], 'EdgeColor', 'none');
+plot(avgProfile, depthAxis, 'k', 'LineWidth', 2);
+set(gca, 'YDir', 'reverse');
+xlabel('normalized power (500 Hz – 5 kHz)');
+ylabel('normalized distance (µm)');
+title(sprintf('Average MUA depth profile (n = %d sessions)', size(allProfiles, 1)));
+box off; grid on;
+
+fprintf('✅ Plotted population-averaged MUA depth profile (%d sessions)\n', size(allProfiles,1));
+end
