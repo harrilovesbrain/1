@@ -10,9 +10,9 @@ function plot_MUA_LECdepth(mouseName)
 rootDir = fullfile('Z:\Buzsakilabspace\LabShare\JunH\Photometry', mouseName);
 sessions = dir(fullfile(rootDir, '**', '*.MUA.mat'));
 nSessions = 0; % count usable sessions
-MUA_all = [];
 
 commonDepth = linspace(0, 1300, 200); % µm range for LEC region (shank E/F)
+MUA_all = nan(numel(sessions), numel(commonDepth)); % <-- Preallocate for speed
 
 for i = 1:numel(sessions)
     muaPath = fullfile(sessions(i).folder, sessions(i).name);
@@ -72,10 +72,14 @@ for i = 1:numel(sessions)
     fprintf('✅ Included: %s\n', sessions(i).name);
 end
 
+% --- Handle no valid sessions ---
 if nSessions == 0
     warning('No valid sessions found for %s.', mouseName);
     return;
 end
+
+% --- Trim unused rows ---
+MUA_all = MUA_all(1:nSessions, :);
 
 % --- Average across sessions ---
 meanMUA = mean(MUA_all,1);
