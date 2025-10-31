@@ -130,17 +130,31 @@ meanMUA = mean(MUA_all,1);
 semMUA  = std(MUA_all,[],1)/sqrt(nSessions);
 
 % --- Plot like Yuta Fig. H ---
-figure('Color','w'); hold on;
+% --- Yuta-style mean ± SEM plot ---
+figure('Color','w','Position',[200 200 400 600]); hold on;
+
+% shaded SEM (light gray, subtle transparency)
 fill([meanMUA-semMUA, fliplr(meanMUA+semMUA)], ...
      [commonDepth, fliplr(commonDepth)], ...
-     [0.85 0.85 0.85], 'EdgeColor','none', 'FaceAlpha', 0.6);
-plot(meanMUA, commonDepth, 'k', 'LineWidth', 2);
-set(gca, 'YDir','reverse');
-xlabel('Normalized MUA power (500 Hz – 5 kHz)');
-ylabel('Depth (µm)');
-title(sprintf('LEC MUA depth profile (n = %d sessions)', nSessions));
-box off;
-set(gca, 'FontSize', 12, 'TickDir', 'out');
+     [0.7 0.7 0.7], 'EdgeColor','none', 'FaceAlpha', 0.4);
 
-fprintf('\n✅ Completed: %d valid sessions plotted.\n', nSessions);
-end
+% mean trace (thick black line)
+plot(meanMUA, commonDepth, 'k', 'LineWidth', 2.5);
+
+% axes style
+set(gca, 'YDir','reverse', ...
+         'Box','off', ...
+         'TickDir','out', ...
+         'FontSize',12, ...
+         'LineWidth',1, ...
+         'XColor','k','YColor','k', ...
+         'YLim',[0 1300], ...
+         'XLim',[0 1.05]);
+
+xlabel('Normalized MUA power (500 Hz – 5 kHz)', 'FontSize',12);
+ylabel('Depth (µm)', 'FontSize',12);
+title(sprintf('LEC MUA depth profile (n = %d sessions)', nSessions), ...
+      'FontWeight','normal','FontSize',12);
+
+% minimalistic grid (optional)
+set(gca,'Layer','top');
