@@ -1,19 +1,21 @@
 function plot_MUA_LECdepth(mouseName)
 % ================================================================
-%  Purpose: Average MUA depth profile (LEC region only)
+%  plot_MUA_LECdepth(mouseName)
+%  Purpose: Average MUA depth profile for LEC region only
+%  Output: Yuta-style smooth mean ± SEM plot
+%
 %  Notes:
-%   • Compatible with modern BuzsakiLab XML format:
-%       xml.parameters.anatomicalDescription.channelGroups.group.channel
-%   • Handles duplicate depth values automatically
-%   • Produces Yuta-style smooth mean ± SEM plot
+%   • Works with modern BuzsakiLab XML format
+%   • Forces continuous 1-D geometry (no duplicated y’s)
+%   • Automatically normalizes within-session and across sessions
 % ================================================================
 
 rootDir = fullfile('Z:\Buzsakilabspace\LabShare\JunH\Photometry', mouseName);
 sessions = dir(fullfile(rootDir, '**', '*.MUA.mat'));
 nSessions = 0;
 
-commonDepth = linspace(0, 1300, 200); % µm range for LEC region
-MUA_all = nan(numel(sessions), numel(commonDepth)); % preallocate
+commonDepth = linspace(0, 800, 200);     % restrict to 0–800 µm (LEC layers)
+MUA_all = nan(numel(sessions), numel(commonDepth));
 
 for i = 1:numel(sessions)
     muaPath = fullfile(sessions(i).folder, sessions(i).name);
@@ -21,69 +23,53 @@ for i = 1:numel(sessions)
 
     % --- Skip sessions missing XML ---
     if ~isfile(xmlPath)
-        fprintf('⚠️ Skipping: %s (no XML found)\n', sessions(i).name);
+        fprintf('⚠️ Skipping: %s (no XML)\n', sessions(i).name);
         continue;
     end
 
     % --- Load MUA data ---
     dataStruct = load(muaPath);
     if ~isfield(dataStruct, 'MUA') || ~isfield(dataStruct.MUA, 'data')
-        fprintf('⚠️ Skipping: %s (no valid MUA data)\n', sessions(i).name);
+        fprintf('⚠️ Skipping: %s (invalid MUA)\n', sessions(i).name);
         continue;
     end
     MUA = dataStruct.MUA;
 
-    % --- Parse electrode geometry (modern XML structure) ---
+    % --- Parse XML for LEC channel groups ---
     try
         xml = xml2struct(xmlPath);
         groups = xml.parameters.anatomicalDescription.channelGroups.group;
-        if ~iscell(groups)
-            groups = {groups};
-        end
+        if ~iscell(groups), groups = {groups}; end
 
-        % use last two groups as LEC region
+        % use last 2 groups as LEC
         lecIdx = max(1, numel(groups)-1):numel(groups);
         lecCh = [];
-        lecY  = [];
 
         for gi = lecIdx
             grp = groups{gi};
             chans = grp.channel;
-            if ~iscell(chans)
-                chans = {chans};
-            end
-
+            if ~iscell(chans), chans = {chans}; end
             for k = 1:numel(chans)
                 chNode = chans{k};
-
-                % --- Channel ID ---
                 if isfield(chNode, 'id')
                     lecCh(end+1) = str2double(chNode.id.Text);
-                elseif isfield(chNode, 'Attributes') && isfield(chNode.Attributes, 'id')
+                elseif isfield(chNode, 'Attributes') && isfield(chNode.Attributes,'id')
                     lecCh(end+1) = str2double(chNode.Attributes.id);
                 else
-                    lecCh(end+1) = k-1; % fallback
-                end
-
-                % --- Depth (y coordinate) ---
-                if isfield(chNode, 'y')
-                    lecY(end+1) = str2double(chNode.y.Text);
-                elseif isfield(chNode, 'Attributes') && isfield(chNode.Attributes, 'y')
-                    lecY(end+1) = str2double(chNode.Attributes.y);
-                else
-                    lecY(end+1) = k * 20; % fallback spacing
+                    lecCh(end+1) = k-1;
                 end
             end
         end
 
     catch ME
-        fprintf('⚠️ Skipping: %s (XML parse error: %s)\n', sessions(i).name, ME.message);
+        fprintf('⚠️ Skipping: %s (XML error: %s)\n', sessions(i).name, ME.message);
         continue;
     end
 
-    % --- Sort and map ---
-    [lecY, sortIdx] = sort(lecY);
-    lecCh = lecCh(sortIdx) + 1; % MATLAB 1-indexed
+    % --- Force continuous probe geometry (avoid duplicate depths) ---
+    lecCh = lecCh + 1;            % MATLAB indexing
+    spacing = 20;                 % µm between sites (adjust if 25 µm probe)
+    lecY = ((1:numel(lecCh)) - 1) * spacing;
 
     validCh = lecCh(lecCh <= size(MUA.data,2));
     if isempty(validCh)
@@ -91,32 +77,27 @@ for i = 1:numel(sessions)
         continue;
     end
 
-    % --- Compute normalized power ---
+    % --- Compute normalized power per channel ---
     meanPower = mean(MUA.data(:,validCh),1);
-    normPower = meanPower / max(meanPower);
-
-    % --- Handle duplicate depths before interpolation ---
-    [uniqueY, ~, ic] = unique(lecY(1:numel(normPower)));
-    if numel(uniqueY) < 2
-        fprintf('⚠️ Skipping: %s (insufficient unique depth points)\n', sessions(i).name);
+    if all(meanPower == 0)
+        fprintf('⚠️ Skipping: %s (empty MUA)\n', sessions(i).name);
         continue;
     end
+    normPower = meanPower / max(meanPower);
 
-    avgPower = accumarray(ic(:), normPower(:), [], @mean);
+    % --- Interpolate onto common depth grid ---
+    interpMUA = interp1(lecY, normPower, commonDepth, 'pchip', 'extrap');
 
-    % --- Interpolate to common depth grid ---
-    interpMUA = interp1(uniqueY, avgPower, commonDepth, 'pchip', 'extrap');
+    % --- Smooth across depth (gentle) ---
+    smoothed = smoothdata(interpMUA, 'gaussian', 5);
 
-    % --- Smooth along depth ---
-    smoothed = smoothdata(interpMUA, 'gaussian', 10);
-
-    % --- Store for averaging ---
+    % --- Store ---
     nSessions = nSessions + 1;
     MUA_all(nSessions,:) = smoothed;
     fprintf('✅ Included: %s\n', sessions(i).name);
 end
 
-% --- Check for valid sessions ---
+% --- Verify valid sessions ---
 if nSessions == 0
     warning('No valid sessions found for %s.', mouseName);
     return;
@@ -125,36 +106,35 @@ end
 % --- Trim unused rows ---
 MUA_all = MUA_all(1:nSessions, :);
 
-% --- Average across sessions ---
+% --- Average & normalize across sessions ---
 meanMUA = mean(MUA_all,1);
 semMUA  = std(MUA_all,[],1)/sqrt(nSessions);
 
-% --- Plot like Yuta Fig. H ---
-% --- Yuta-style mean ± SEM plot ---
-figure('Color','w','Position',[200 200 400 600]); hold on;
+% Re-normalize across sessions for clear single peak
+meanMUA = meanMUA / max(meanMUA);
+semMUA  = semMUA / max(meanMUA);
 
-% shaded SEM (light gray, subtle transparency)
+% --- Plot: Yuta-style mean ± SEM ---
+figure('Color','w','Position',[300 200 420 600]); hold on;
+
+% shaded SEM
 fill([meanMUA-semMUA, fliplr(meanMUA+semMUA)], ...
      [commonDepth, fliplr(commonDepth)], ...
-     [0.7 0.7 0.7], 'EdgeColor','none', 'FaceAlpha', 0.4);
+     [0.7 0.7 0.7], 'EdgeColor','none', 'FaceAlpha',0.4);
 
-% mean trace (thick black line)
+% mean line
 plot(meanMUA, commonDepth, 'k', 'LineWidth', 2.5);
 
-% axes style
-set(gca, 'YDir','reverse', ...
-         'Box','off', ...
-         'TickDir','out', ...
-         'FontSize',12, ...
-         'LineWidth',1, ...
-         'XColor','k','YColor','k', ...
-         'YLim',[0 1300], ...
-         'XLim',[0 1.05]);
+% aesthetics
+set(gca,'YDir','reverse','Box','off','TickDir','out',...
+    'FontSize',12,'LineWidth',1,'XColor','k','YColor','k',...
+    'YLim',[0 800],'XLim',[0 1.05]);
 
 xlabel('Normalized MUA power (500 Hz – 5 kHz)', 'FontSize',12);
 ylabel('Depth (µm)', 'FontSize',12);
 title(sprintf('LEC MUA depth profile (n = %d sessions)', nSessions), ...
       'FontWeight','normal','FontSize',12);
 
-% minimalistic grid (optional)
+% optional: subtle grid
 set(gca,'Layer','top');
+end
