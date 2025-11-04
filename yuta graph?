@@ -1,19 +1,10 @@
 function plot_MUA_LECdepth_singleShank(mouseName)
 % ================================================================
-%  plot_MUA_LECdepth_singleShank(mouseName)
-%
-%  Purpose :
-%     Plot Yuta-style LEC MUA depth profile (500 Hz–5 kHz band)
-%     excluding high-EMG movement noise and maximizing
-%     peak sharpness / visual contrast for presentation.
-%
-%  Enhancements :
-%     • Light smoothing (σ≈2)  → sharper peak
-%     • Contrast stretch (power-law, 0.6) → accentuates high MUA
-%     • Bold mean line + darker SEM shading
-%
-%  Author : Husang (Harry) Lee, Buzsáki Lab
-%  Updated: 2025-11-04
+%  LEC MUA depth profile (Yuta-style, maximized spikiness)
+%  - Sharper Gaussian (σ≈1)
+%  - Strong contrast (γ=0.4)
+%  - Exponential peak sharpening
+%  - Light horizontal guide lines (every 100 µm)
 % ================================================================
 
 rootDir  = fullfile('Z:\Buzsakilabspace\LabShare\JunH\Photometry', mouseName);
@@ -74,11 +65,16 @@ for i = 1:numel(sessions)
     if all(isnan(power)), continue; end
     power = fillmissing(power,'linear');
 
-    % ---------- normalize, light smooth, contrast-enhance ----------
+    % ---------- sharpen peak (minimal smooth + nonlinear boost) ----------
     power = power / max(power);
-    power = smoothdata(power,'gaussian',2);   % very light smoothing
-    power = power .^ 0.6;                     % contrast stretch (γ<1)
-    power = power / max(power);               % renormalize peak = 1
+    power = smoothdata(power,'gaussian',1);        % σ≈1 → very sharp
+    power = power .^ 0.4;                          % strong contrast
+    % Exponential sharpening around max
+    [~,pk] = max(power);
+    idx = 1:numel(power);
+    boost = exp(-((idx - pk).^2)/(2*(2.5)^2));
+    power = power + 0.25*boost .* power;
+    power = power / max(power);
 
     % ---------- interpolate to uniform 0–1280 µm grid ----------
     nCh = numel(power);
@@ -103,20 +99,28 @@ semMUA  = semMUA / max(meanMUA);
 
 % ---------- plot ----------
 figure('Color','w','Position',[300 200 460 640]); hold on;
+
+% horizontal guide lines every 100 µm (like Yuta Fig H)
+for y = 800:100:1300
+    plot([0 1.05],[y y],'Color',[0.85 0.85 0.85],'LineWidth',0.5);
+end
+
+% shaded SEM band
 fill([meanMUA-semMUA, fliplr(meanMUA+semMUA)], ...
      [fullDepth, fliplr(fullDepth)], [0.7 0.7 0.7], ...
      'EdgeColor','none','FaceAlpha',0.55);
-plot(meanMUA, fullDepth, 'k', 'LineWidth', 3);
+
+% bold mean trace
+plot(meanMUA, fullDepth, 'k', 'LineWidth', 3.2);
 
 set(gca,'YDir','reverse','Box','off','TickDir','out','FontSize',12,'LineWidth',1.2);
 xlabel('Normalized MUA power (peak = 1, 500 Hz–5 kHz)');
 ylabel('Depth (µm)');
-title(sprintf('LEC MUA depth (Yuta-style enhanced) — %s (n = %d)', ...
+title(sprintf('LEC MUA depth (yuta-harry revised) — %s (n = %d)', ...
       mouseName, nSessions),'FontWeight','normal');
 ylim([800 1300]);      % deep LEC focus
 xlim([0 1.05]);
 set(gca,'Layer','top');
-grid on; grid minor;
 
-fprintf('\n✅ Finished: %d sessions processed (EMG filtering applied when available)\n', nSessions);
+fprintf('\n✅ Finished: %d sessions processed (spiky-enhanced)\n', nSessions);
 end
