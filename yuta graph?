@@ -1,118 +1,78 @@
 function plot_MUA_LECdepth_singleShank(mouseName)
 % ================================================================
-%  Purpose : Plot averaged LEC MUA depth profile (single shank)
-%  Normalization : Sum-normalized (∑ power = 1) following Yuta's MUA method
-%  Author  : Husang (Harry) Lee, Buzsáki Lab
-%  Last updated : 2025-11-04
+%  Purpose : Yuta-style MUA depth profile (aligned by each session's peak)
+%  Normalization : max per session (peak = 1)
+%  Author : Husang (Harry) Lee, Buzsáki Lab
 % ================================================================
 
-rootDir = fullfile('Z:\Buzsakilabspace\LabShare\JunH\Photometry', mouseName);
+rootDir = fullfile('Z:\Buzsakilabspace\LabShare\JunH\Photometry',mouseName);
 sessions = dir(fullfile(rootDir,'**','*.MUA.mat'));
 if isempty(sessions), error('No MUA files found.'); end
 
-nSessions = 0;
-allMUA = [];
+nSessions = 0; allMUA = []; allDepths = [];
 
 for i = 1:numel(sessions)
-    muaPath = fullfile(sessions(i).folder, sessions(i).name);
-    xmlPath = fullfile(sessions(i).folder, [sessions(i).name(1:end-8) '.xml']);
-    if ~isfile(xmlPath)
-        fprintf('⚠️  No XML for %s\n', sessions(i).name);
-        continue;
-    end
+    muaPath = fullfile(sessions(i).folder,sessions(i).name);
+    xmlPath = fullfile(sessions(i).folder,[sessions(i).name(1:end-8) '.xml']);
+    if ~isfile(xmlPath), continue; end
 
-    % --- Load MUA ---
     S = load(muaPath);
-    if ~isfield(S,'MUA') || ~isfield(S.MUA,'data')
-        fprintf('⚠️  Invalid MUA in %s\n', sessions(i).name);
-        continue;
-    end
+    if ~isfield(S,'MUA')||~isfield(S.MUA,'data'), continue; end
     MUA = S.MUA;
 
-    % --- Parse last channel group (LEC shank) ---
-    try
-        xml = xml2struct(xmlPath);
-        groups = xml.parameters.anatomicalDescription.channelGroups.group;
-        if ~iscell(groups), groups = {groups}; end
-        lecIdx = numel(groups);
-        grp = groups{lecIdx};
-        chans = grp.channel;
-        if ~iscell(chans), chans = {chans}; end
-        lecCh = [];
-        for k = 1:numel(chans)
-            node = chans{k};
-            if isfield(node,'id')
-                lecCh(end+1) = str2double(node.id.Text);
-            elseif isfield(node,'Attributes') && isfield(node.Attributes,'id')
-                lecCh(end+1) = str2double(node.Attributes.id);
-            else
-                lecCh(end+1) = k-1;
-            end
-        end
-        lecCh = lecCh + 1;
-    catch
-        fprintf('⚠️  XML parse error in %s\n', sessions(i).name);
-        continue;
-    end
+    % --- One LEC shank geometry (64 x 20 µm) ---
+    lecCh = 1:min(64,size(MUA.data,2));
+    lecY  = (0:numel(lecCh)-1)*20;   % µm
+    fullDepth = linspace(0,1280,200);
 
-    % --- Fallback geometry 0–1280 µm (20 µm spacing) ---
-    spacing = 20;
-    N = numel(lecCh);
-    lecY = (0:N-1)*spacing;
-    lecY = lecY * (1280 / max(lecY));
+    % --- Compute mean MUA power and normalize by max ---
+    meanPower = mean(MUA.data(:,lecCh),1);
+    meanPower = meanPower / max(meanPower);      % Yuta-style
 
-    % --- Compute normalized MUA power (sum-normalized) ---
-    validCh = lecCh(lecCh <= size(MUA.data,2));
-    meanPower = mean(MUA.data(:,validCh),1);
-    if all(meanPower == 0), continue; end
+    % --- Interpolate + smooth ---
+    interpMUA = interp1(lecY,meanPower,fullDepth,'pchip','extrap');
+    smoothed  = smoothdata(interpMUA,'gaussian',10);
 
-    % remove NaN or negative
-    meanPower(meanPower < 0 | isnan(meanPower)) = 0;
+    % --- Find peak depth (landmark) ---
+    [~,pkIdx] = max(smoothed);
+    peakDepth = fullDepth(pkIdx);
 
-    % --- Band-limit normalization (Yuta-style probability) ---
-    normPower = meanPower / sum(meanPower);  % sum = 1
-
-    % --- Interpolate and smooth ---
-    fullDepth = linspace(0,1280,400);
-    interpMUA = interp1(lecY, normPower, fullDepth, 'pchip', 'extrap');
-    smoothed  = smoothdata(interpMUA,'gaussian',25);
+    % --- Align so peak = 0 (relative depth) ---
+    relDepth = fullDepth - peakDepth;  % µm relative to peak
 
     % --- Store ---
-    nSessions = nSessions + 1;
+    nSessions = nSessions+1;
+    allDepths(nSessions,:) = relDepth;
     allMUA(nSessions,:) = smoothed;
-    if nSessions==1, refDepth = fullDepth; end
-    fprintf('✅ Included: %s\n', sessions(i).name);
 end
 
-if nSessions==0
-    warning('No valid sessions for %s.', mouseName);
-    return;
+if nSessions==0, warning('No valid sessions'); return; end
+
+% --- Interpolate to a common relative-depth grid (−600..+600 µm) ---
+commonDepth = linspace(-600,600,200);
+alignedMUA = nan(nSessions,numel(commonDepth));
+for i = 1:nSessions
+    alignedMUA(i,:) = interp1(allDepths(i,:),allMUA(i,:),commonDepth,'pchip','extrap');
 end
 
 % --- Average across sessions ---
-meanMUA = mean(allMUA,1);
-semMUA  = std(allMUA,[],1)/sqrt(nSessions);
+meanMUA = mean(alignedMUA,1);
+semMUA  = std(alignedMUA,[],1)/sqrt(nSessions);
 
-% --- Normalize again to ensure sum = 1 ---
-meanMUA = meanMUA / sum(meanMUA);
-semMUA  = semMUA / sum(meanMUA);
-
-% --- Plot (Yuta-style: deep region focus) ---
+% --- Plot ---
 figure('Color','w','Position',[300 200 420 600]); hold on;
 fill([meanMUA-semMUA, fliplr(meanMUA+semMUA)], ...
-     [refDepth, fliplr(refDepth)], [0.8 0.8 0.8], ...
+     [commonDepth, fliplr(commonDepth)], [0.8 0.8 0.8], ...
      'EdgeColor','none','FaceAlpha',0.4);
-plot(meanMUA, refDepth, 'k', 'LineWidth', 2.5);
+plot(meanMUA, commonDepth, 'k','LineWidth',2.5);
 
 set(gca,'YDir','reverse','Box','off','TickDir','out',...
     'FontSize',12,'LineWidth',1);
-xlabel('Normalized MUA power (sum = 1, 500 Hz – 5 kHz)','FontSize',12);
-ylabel('Depth (µm)','FontSize',12);
-title(sprintf('LEC MUA depth (1 shank) — %s (n = %d sessions)', ...
-      mouseName, nSessions),'FontWeight','normal','FontSize',12);
-ylim([800 1300]);   % zoom on deep LEC region
-xlim([0 max(meanMUA)*1.1]);
+xlabel('Normalized MUA power (peak = 1, 500 Hz–5 kHz)','FontSize',12);
+ylabel('Relative depth (µm from MUA peak)','FontSize',12);
+title(sprintf('LEC MUA depth (Yuta-style, %s, n=%d)',mouseName,nSessions),...
+      'FontWeight','normal','FontSize',12);
+ylim([-600 600]);
+xlim([0 1.05]);
 set(gca,'Layer','top');
-
-fprintf('\n✅ Finished: %d sessions averaged (sum-normalized to 1)\n', nSessions);
 end
