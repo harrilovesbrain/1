@@ -1,0 +1,156 @@
+function [aligned, behavior] = align_photometry_with_behavior(ppd_files, hd5_file, varargin)
+% Aligns two photometry data files (HPC and LEC) with behavioral time points from hd5.
+
+    % --- Auto-detect files if not provided ---
+    if nargin < 1 || isempty(ppd_files)
+        ppd_files = dir('*.ppd');
+        if isempty(ppd_files), error('No .ppd files found.'); end
+        ppd_files = string({ppd_files.name});
+    end
+    if nargin < 2 || isempty(hd5_file)
+        hd5_list = [dir('*.hd5'); dir('*.h5')];
+        hd5_file = '';
+        if ~isempty(hd5_list), hd5_file = hd5_list(1).name; end
+    end
+
+    % --- Load photometry data (.ppd) for HPC and LEC ---
+    hpc_idx = contains(ppd_files, 'HPC', 'IgnoreCase', true);
+    lec_idx = contains(ppd_files, 'LEC', 'IgnoreCase', true);
+    if ~any(hpc_idx) || ~any(lec_idx)
+        error('Both HPC and LEC ppd files must be present and recognized by name.');
+    end
+    HPC_photometry = my_process_photometry_v6(char(ppd_files(hpc_idx)), 'isplot', false);
+    LEC_photometry = my_process_photometry_v6(char(ppd_files(lec_idx)), 'isplot', false);
+    % HPC_photometry = my_process_photometry_v6(char(ppd_files(hpc_idx)));
+    % LEC_photometry = my_process_photometry_v6(char(ppd_files(lec_idx)));
+
+    % --- Load and parse behavior data (.hd5) ---
+    behavior = struct();
+    if ~isempty(hd5_file)
+        try
+            info = h5info(hd5_file);
+            has_trials = any(strcmp({info.Datasets.Name}, 'Trials')) || ...
+                         any(strcmp({info.Groups.Name}, '/Trials'));
+            if has_trials
+                behavior = extract_behavior_trials(hd5_file);
+            else
+                warning('No /Trials dataset found in %s. Proceeding with empty behavior struct.', hd5_file);
+            end
+        catch ME
+            warning('Could not extract behavior from %s: %s. Proceeding with empty behavior struct.', hd5_file, ME.message);
+        end
+    end
+
+    % --- Align HPC and LEC photometry using photometry_align pulses ---
+    hpc_pulse_times = get_pulse_times(HPC_photometry.photometry_align, HPC_photometry.time_seconds);
+    lec_pulse_times = get_pulse_times(LEC_photometry.photometry_align, LEC_photometry.time_seconds);
+    last_pulse_time_hpc = hpc_pulse_times(end);
+    last_pulse_time_lec = lec_pulse_times(end);
+    HPC_last_pulse_index = find(HPC_photometry.time_seconds == last_pulse_time_hpc);
+    LEC_last_pulse_index = find(LEC_photometry.time_seconds == last_pulse_time_lec);
+    HPC_photometry_index = 1:length(HPC_photometry.time_seconds);
+    LEC_photometry_index = 1:length(LEC_photometry.time_seconds);
+    index_diff = abs(HPC_last_pulse_index - LEC_last_pulse_index);
+
+    % Find all trial onset rising edges in both HPC and LEC
+    hpc_trial_on_idx = find(diff(HPC_photometry.trial_onset) == 1) + 1;
+    lec_trial_on_idx = find(diff(LEC_photometry.trial_onset) == 1) + 1;
+
+    if ~isempty(hpc_trial_on_idx)
+        % Align trial onset indices for HPC and LEC
+        trial_start_hpc = hpc_trial_on_idx;
+        hpc_remaining=hpc_trial_on_idx(1);
+        totalexpduration = HPC_last_pulse_index - hpc_remaining;
+        lec_remaining = LEC_last_pulse_index- totalexpduration;
+        if hpc_remaining < lec_remaining
+            trial_start_lec = hpc_trial_on_idx + index_diff;
+        else
+            trial_start_lec = hpc_trial_on_idx - index_diff;
+        end
+        trial_on_source = 'HPC';
+        % Further processing can be done here if needed
+    elseif ~isempty(lec_trial_on_idx)
+        trial_start_lec = lec_trial_on_idx;
+        lec_remaining=lec_trial_on_idx(1);
+        totalexpduration = LEC_last_pulse_index - lec_remaining;
+        hpc_remaining = HPC_last_pulse_index- totalexpduration;
+        if lec_remaining < hpc_remaining
+            trial_start_hpc = lec_trial_on_idx + index_diff;
+        else
+            trial_start_hpc = lec_trial_on_idx - index_diff;
+        end
+        trial_on_source = 'LEC';
+    end
+
+    % --- Output struct ---
+    aligned = struct();
+    aligned.HPC_photometry = HPC_photometry;
+    aligned.LEC_photometry = LEC_photometry;
+    aligned.behavior = behavior;
+    aligned.trial_start_index_hpc = trial_start_hpc;
+    aligned.trial_start_index_lec = trial_start_lec;
+    aligned.HPC_photometry_index = HPC_photometry_index;
+    aligned.LEC_photometry_index = LEC_photometry_index;
+    aligned.trial_on_source = trial_on_source;
+    aligned.time_offset = last_pulse_time_hpc - last_pulse_time_lec;
+
+    disp('HPC and LEC photometry and behavior alignment complete.');
+end
+
+function pulse_times = get_pulse_times(align_signal, time_vector)
+    pulse_idx = find(diff(align_signal) == 1) + 1;
+    pulse_times = time_vector(pulse_idx);
+end
+
+function behavior = extract_behavior_trials(hd5_file)
+    try
+        data = h5read(hd5_file, '/Trials');
+    catch
+        error('Could not find /Trials dataset in hd5 file.');
+    end
+    trialNums = data.trialNumber;
+    results = data.result;
+    if isfield(data, 'starttrial') && isfield(data, 'endtrial')
+        trial_start = double(data.starttrial);
+        trial_end = double(data.endtrial);
+    else
+        error('No starttrial or endtrial field found in /Trials dataset.');
+    end
+    trial_start_offset = trial_start(1);
+    trial_start = trial_start - trial_start_offset;
+    trial_end = trial_end - trial_start_offset;
+    if isfield(data, 'inh_onset_1st')
+        fv_onset = double(data.fvOnTime_1st);
+    else
+        error('No inh_onset_1st (FV onset) field found in /Trials dataset.');
+    end
+    startIdx = find(trialNums == 1, 1, 'first');
+    if isempty(startIdx), error('No trialNumber == 1 found in HDF5 file.'); end
+    trialNums = trialNums(startIdx:end);
+    results = results(startIdx:end);
+    trial_start = trial_start(startIdx:end);
+    trial_end = trial_end(startIdx:end);
+    fv_onset = fv_onset(startIdx:end);
+    nTrials = max(trialNums);
+    trial_labels = nan(nTrials, 1);
+    for i = 1:length(trialNums)
+        t = trialNums(i);
+        if results(i) == 1 || results(i) == 2
+            trial_labels(t) = 0;
+        elseif results(i) == 3 || results(i) == 4
+            trial_labels(t) = 1;
+        elseif results(i) == 5 || results(i) == 6
+            trial_labels(t) = 2;
+        else
+            trial_labels(t) = NaN;
+        end
+    end
+    behavior = struct();
+    behavior.trial_start = trial_start;
+    behavior.trial_end = trial_end;
+    behavior.trial_numbers = trialNums;
+    behavior.results = results;
+    behavior.trial_labels = trial_labels;
+    behavior.nTrials = nTrials;
+    behavior.fv_onset = fv_onset;
+end
