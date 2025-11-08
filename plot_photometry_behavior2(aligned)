@@ -1,0 +1,771 @@
+function plot_photometry_behavior2(aligned)
+    % --- 1. Cross-correlogram plots (3x2: correct/false/miss × HPC/LEC) ---
+    figure('Name','ACh vs 5-HT Crosscorrelograms','Position',[100 100 1200 700]);
+    outcome_labels = {'Correct','False','Miss'};
+    region_labels = {'HPC','LEC'};
+    colors = lines(2);
+
+    Fs = aligned.HPC_photometry.sampling_rate;
+    maxlag = round(20 * Fs); % 20 seconds window
+
+    for region_idx = 1:2
+        for outcome_idx = 1:3
+            subplot(2,3,(region_idx-1)*3+outcome_idx);
+            if region_idx == 1
+                region = 'HPC';
+                phot = aligned.HPC_photometry;
+                idx_vec = aligned.HPC_photometry_index;
+                trial_start_index = aligned.trial_start_index_hpc;
+            else
+                region = 'LEC';
+                phot = aligned.LEC_photometry;
+                idx_vec = aligned.LEC_photometry_index;
+                trial_start_index = aligned.trial_start_index_lec;
+            end
+
+            trial_inds = find(aligned.behavior.trial_labels == (outcome_idx-1));
+            xcorr_trials = [];
+            lags = [];
+            for i = 1:length(trial_inds)
+                trial_num = trial_inds(i);
+                if trial_num > length(trial_start_index)
+                    continue
+                end
+                trial_start_idx = trial_start_index(trial_num);
+                if trial_num > length(aligned.behavior.trial_end)
+                    continue
+                end
+                trial_end_idx = trial_start_idx + ...
+                    (aligned.behavior.trial_end(trial_num) - aligned.behavior.trial_start(trial_num));
+                if isnan(trial_start_idx) || isnan(trial_end_idx) || trial_end_idx <= trial_start_idx
+                    continue
+                end
+                if trial_end_idx > length(idx_vec)
+                    continue
+                end
+                ach = phot.dFF_Ach_cleaned_z(idx_vec(trial_start_idx:trial_end_idx));
+                fiveht = phot.dFF_FiveHT_cleaned_z(idx_vec(trial_start_idx:trial_end_idx));
+                minlen = min(length(ach), length(fiveht));
+                ach = ach(1:minlen);
+                fiveht = fiveht(1:minlen);
+                [xc, lags_] = xcorr(ach, fiveht, maxlag, 'coeff');
+                xcorr_trials = [xcorr_trials; xc'];
+                lags = lags_ / Fs;
+            end
+            if isempty(xcorr_trials)
+                title([region ' - ' outcome_labels{outcome_idx} ' (empty)']);
+                continue
+            end
+            avg_xcorr = mean(xcorr_trials,1,'omitnan');
+            sem_xcorr = std(xcorr_trials,0,1,'omitnan')/sqrt(size(xcorr_trials,1));
+            plot(lags, avg_xcorr, 'Color', colors(region_idx,:), 'LineWidth', 1.5); hold on;
+            fill([lags fliplr(lags)], [avg_xcorr+sem_xcorr fliplr(avg_xcorr-sem_xcorr)], ...
+                colors(region_idx,:), 'FaceAlpha', 0.2, 'EdgeColor', 'none');
+            [~, peak_idx] = max(avg_xcorr);
+            peak_lag = lags(peak_idx);
+            xline(peak_lag, '--k', sprintf('Peak lag = %.2f s', peak_lag), ...
+                'LabelOrientation','horizontal', 'LabelVerticalAlignment','bottom');
+            xlabel('Lag (s)');
+            ylabel('Cross-corr');
+            title(sprintf('%s - %s (Peak lag = %.2f s)', region, outcome_labels{outcome_idx}, peak_lag));
+            grid on;
+            xlim([-20 20]);
+        end
+    end
+
+    % --- 2. Cross-correlogram plots between HPC and LEC (ACh and 5-HT) ---
+    figure('Name','HPC-LEC Crosscorrelograms','Position',[100 100 1200 600]);
+    for outcome_idx = 1:3
+        % ACh
+        subplot(2,3,outcome_idx);
+        trial_inds = find(aligned.behavior.trial_labels == (outcome_idx-1));
+        xcorr_trials = [];
+        lags = [];
+        for i = 1:length(trial_inds)
+            trial_num = trial_inds(i);
+            if trial_num > length(aligned.trial_start_index_hpc) || trial_num > length(aligned.trial_start_index_lec)
+                continue
+            end
+            trial_start_idx_hpc = aligned.trial_start_index_hpc(trial_num);
+            trial_start_idx_lec = aligned.trial_start_index_lec(trial_num);
+            if trial_num > length(aligned.behavior.trial_end)
+                continue
+            end
+            trial_end_idx_hpc = trial_start_idx_hpc + ...
+                (aligned.behavior.trial_end(trial_num) - aligned.behavior.trial_start(trial_num));
+            trial_end_idx_lec = trial_start_idx_lec + ...
+                (aligned.behavior.trial_end(trial_num) - aligned.behavior.trial_start(trial_num));
+            if isnan(trial_start_idx_hpc) || isnan(trial_end_idx_hpc) || trial_end_idx_hpc <= trial_start_idx_hpc
+                continue
+            end
+            if isnan(trial_start_idx_lec) || isnan(trial_end_idx_lec) || trial_end_idx_lec <= trial_start_idx_lec
+                continue
+            end
+            if trial_end_idx_hpc > length(aligned.HPC_photometry_index)
+                continue
+            end
+            if trial_end_idx_lec > length(aligned.LEC_photometry_index)
+                continue
+            end
+            hpc_ach = aligned.HPC_photometry.dFF_Ach_cleaned_z(aligned.HPC_photometry_index(trial_start_idx_hpc:trial_end_idx_hpc));
+            lec_ach = aligned.LEC_photometry.dFF_Ach_cleaned_z(aligned.LEC_photometry_index(trial_start_idx_lec:trial_end_idx_lec));
+            minlen = min(length(hpc_ach), length(lec_ach));
+            hpc_ach = hpc_ach(1:minlen);
+            lec_ach = lec_ach(1:minlen);
+            [xc, lags_] = xcorr(hpc_ach, lec_ach, maxlag, 'coeff');
+            xcorr_trials = [xcorr_trials; xc'];
+            lags = lags_ / Fs;
+        end
+        if isempty(xcorr_trials)
+            title(['HPC-LEC ACh - ' outcome_labels{outcome_idx} ' (empty)']);
+            continue;
+        end
+        avg_xcorr = mean(xcorr_trials,1,'omitnan');
+        sem_xcorr = std(xcorr_trials,0,1,'omitnan')/sqrt(size(xcorr_trials,1));
+        plot(lags, avg_xcorr, 'b', 'LineWidth', 1.5); hold on;
+        fill([lags fliplr(lags)], [avg_xcorr+sem_xcorr fliplr(avg_xcorr-sem_xcorr)], ...
+            'b', 'FaceAlpha', 0.2, 'EdgeColor', 'none');
+        [~, peak_idx] = max(avg_xcorr);
+        peak_lag = lags(peak_idx);
+        xline(peak_lag, '--k', sprintf('Peak lag = %.2f s', peak_lag), ...
+            'LabelOrientation','horizontal', 'LabelVerticalAlignment','bottom');
+        xlabel('Lag (s)');
+        ylabel('Cross-corr');
+        title(sprintf('HPC-LEC ACh - %s (Peak lag = %.2f s)', outcome_labels{outcome_idx}, peak_lag));
+        xlim([-20 20]);
+        grid on;
+    end
+
+    for outcome_idx = 1:3
+        % 5-HT
+        subplot(2,3,3+outcome_idx);
+        trial_inds = find(aligned.behavior.trial_labels == (outcome_idx-1));
+        xcorr_trials = [];
+        lags = [];
+        for i = 1:length(trial_inds)
+            trial_num = trial_inds(i);
+            if trial_num > length(aligned.trial_start_index_hpc) || trial_num > length(aligned.trial_start_index_lec)
+                continue
+            end
+            trial_start_idx_hpc = aligned.trial_start_index_hpc(trial_num);
+            trial_start_idx_lec = aligned.trial_start_index_lec(trial_num);
+            if trial_num > length(aligned.behavior.trial_end)
+                continue
+            end
+            trial_end_idx_hpc = trial_start_idx_hpc + ...
+                (aligned.behavior.trial_end(trial_num) - aligned.behavior.trial_start(trial_num));
+            trial_end_idx_lec = trial_start_idx_lec + ...
+                (aligned.behavior.trial_end(trial_num) - aligned.behavior.trial_start(trial_num));
+            if isnan(trial_start_idx_hpc) || isnan(trial_end_idx_hpc) || trial_end_idx_hpc <= trial_start_idx_hpc
+                continue
+            end
+            if isnan(trial_start_idx_lec) || isnan(trial_end_idx_lec) || trial_end_idx_lec <= trial_start_idx_lec
+                continue
+            end
+            if trial_end_idx_hpc > length(aligned.HPC_photometry_index)
+                continue
+            end
+            if trial_end_idx_lec > length(aligned.LEC_photometry_index)
+                continue
+            end
+            hpc_5ht = aligned.HPC_photometry.dFF_FiveHT_cleaned_z(aligned.HPC_photometry_index(trial_start_idx_hpc:trial_end_idx_hpc));
+            lec_5ht = aligned.LEC_photometry.dFF_FiveHT_cleaned_z(aligned.LEC_photometry_index(trial_start_idx_lec:trial_end_idx_lec));
+            minlen = min(length(hpc_5ht), length(lec_5ht));
+            hpc_5ht = hpc_5ht(1:minlen);
+            lec_5ht = lec_5ht(1:minlen);
+            [xc, lags_] = xcorr(hpc_5ht, lec_5ht, maxlag, 'coeff');
+            xcorr_trials = [xcorr_trials; xc'];
+            lags = lags_ / Fs;
+        end
+        if isempty(xcorr_trials)
+            title(['HPC-LEC 5-HT - ' outcome_labels{outcome_idx} ' (empty)']);
+            continue;
+        end
+        avg_xcorr = mean(xcorr_trials,1,'omitnan');
+        sem_xcorr = std(xcorr_trials,0,1,'omitnan')/sqrt(size(xcorr_trials,1));
+        plot(lags, avg_xcorr, 'r', 'LineWidth', 1.5); hold on;
+        fill([lags fliplr(lags)], [avg_xcorr+sem_xcorr fliplr(avg_xcorr-sem_xcorr)], ...
+            'r', 'FaceAlpha', 0.2, 'EdgeColor', 'none');
+        [~, peak_idx] = max(avg_xcorr);
+        peak_lag = lags(peak_idx);
+        xline(peak_lag, '--k', sprintf('Peak lag = %.2f s', peak_lag), ...
+            'LabelOrientation','horizontal', 'LabelVerticalAlignment','bottom');
+        xlabel('Lag (s)');
+        ylabel('Cross-corr');
+        title(sprintf('HPC-LEC 5-HT - %s (Peak lag = %.2f s)', outcome_labels{outcome_idx}, peak_lag));
+        xlim([-20 20]);
+        grid on;
+    end
+
+    % --- 3. Session-wide cross-correlogram between HPC and LEC (ACh and 5-HT, time-aligned) ---
+    figure('Name','Session-wide HPC-LEC Crosscorrelograms','Position',[100 100 1000 400]);
+    maxlag = round(20 * Fs); % 20 seconds window
+
+    % Get time vectors
+    t_hpc = aligned.HPC_photometry.time_seconds;
+    t_lec = aligned.LEC_photometry.time_seconds + aligned.time_offset;
+
+    % Interpolate LEC signals onto HPC timebase
+    lec_ach_interp = interp1(t_lec, aligned.LEC_photometry.dFF_Ach_cleaned_z, t_hpc, 'linear', 'extrap');
+    lec_5ht_interp = interp1(t_lec, aligned.LEC_photometry.dFF_FiveHT_cleaned_z, t_hpc, 'linear', 'extrap');
+
+    % Use already z-scored signals
+    hpc_ach = aligned.HPC_photometry.dFF_Ach_cleaned_z;
+    lec_ach = lec_ach_interp;
+    hpc_5ht = aligned.HPC_photometry.dFF_FiveHT_cleaned_z;
+    lec_5ht = lec_5ht_interp;
+
+    subplot(2,2,1);
+    [cc_ach, lags_ach] = xcorr(hpc_ach, lec_ach, maxlag, 'coeff');
+    lags_sec = lags_ach/Fs;
+    plot(lags_sec, cc_ach, 'b', 'LineWidth', 1.5); hold on;
+    [~, peak_idx] = max(cc_ach);
+    peak_lag = lags_sec(peak_idx);
+    xline(peak_lag, '--k', sprintf('Peak lag = %.2f s', peak_lag), ...
+        'LabelOrientation','horizontal', 'LabelVerticalAlignment','bottom');
+    xlabel('Lag (s)'); ylabel('Cross-corr');
+    title(sprintf('Session-wide: HPC ACh vs LEC ACh (Peak lag = %.2f s)', peak_lag));
+    xlim([-20 20]); grid on;
+
+    subplot(2,2,2);
+    [cc_5ht, lags_5ht] = xcorr(hpc_5ht, lec_5ht, maxlag, 'coeff');
+    lags_sec = lags_5ht/Fs;
+    plot(lags_sec, cc_5ht, 'r', 'LineWidth', 1.5); hold on;
+    [~, peak_idx] = max(cc_5ht);
+    peak_lag = lags_sec(peak_idx);
+    xline(peak_lag, '--k', sprintf('Peak lag = %.2f s', peak_lag), ...
+        'LabelOrientation','horizontal', 'LabelVerticalAlignment','bottom');
+    xlabel('Lag (s)'); ylabel('Cross-corr');
+    title(sprintf('Session-wide: HPC 5-HT vs LEC 5-HT (Peak lag = %.2f s)', peak_lag));
+    xlim([-20 20]); grid on;
+
+    subplot(2,2,3);
+    [cc_hpc_within, lags_hpc_within] = xcorr(hpc_ach, hpc_5ht, maxlag, 'coeff');
+    lags_sec = lags_hpc_within/Fs;
+    plot(lags_sec, cc_hpc_within, 'm', 'LineWidth', 1.5); hold on;
+    [~, peak_idx] = max(cc_hpc_within);
+    peak_lag = lags_sec(peak_idx);
+    xline(peak_lag, '--k', sprintf('Peak lag = %.2f s', peak_lag), ...
+        'LabelOrientation','horizontal', 'LabelVerticalAlignment','bottom');
+    xlabel('Lag (s)'); ylabel('Cross-corr');
+    title(sprintf('Session-wide: HPC ACh vs HPC 5-HT (Peak lag = %.2f s)', peak_lag));
+    xlim([-20 20]); grid on;
+
+    subplot(2,2,4);
+    [cc_lec_within, lags_lec_within] = xcorr(lec_ach, lec_5ht, maxlag, 'coeff');
+    lags_sec = lags_lec_within/Fs;
+    plot(lags_sec, cc_lec_within, 'g', 'LineWidth', 1.5); hold on;
+    [~, peak_idx] = max(cc_lec_within);
+    peak_lag = lags_sec(peak_idx);
+    xline(peak_lag, '--k', sprintf('Peak lag = %.2f s', peak_lag), ...
+        'LabelOrientation','horizontal', 'LabelVerticalAlignment','bottom');
+    xlabel('Lag (s)'); ylabel('Cross-corr');
+    title(sprintf('Session-wide: LEC ACh vs LEC 5-HT (Peak lag = %.2f s)', peak_lag));
+    xlim([-20 20]); grid on;
+
+    % --- 3. Session-wide cross-correlogram between HPC and LEC (ACh and 5-HT, time-aligned) ---
+    figure('Name','Session-wide HPC-LEC Crosscorrelograms','Position',[100 100 1000 400]);
+    maxlag = round(20 * Fs); % 20 seconds window
+
+    % Get time vectors
+    t_hpc = aligned.HPC_photometry.time_seconds;
+    t_lec = aligned.LEC_photometry.time_seconds + aligned.time_offset;
+
+    % Interpolate LEC signals onto HPC timebase
+    lec_ach_interp = interp1(t_lec, aligned.LEC_photometry.dFF_Ach_cleaned_z, t_hpc, 'linear', 'extrap');
+    lec_5ht_interp = interp1(t_lec, aligned.LEC_photometry.dFF_FiveHT_cleaned_z, t_hpc, 'linear', 'extrap');
+
+    % Use already z-scored signals
+    hpc_ach = aligned.HPC_photometry.dFF_Ach_cleaned_z;
+    lec_ach = lec_ach_interp;
+    hpc_5ht = aligned.HPC_photometry.dFF_FiveHT_cleaned_z;
+    lec_5ht = lec_5ht_interp;
+
+    subplot(2,2,1);
+    [cc_ach, lags_ach] = xcorr(hpc_ach, lec_ach, maxlag, 'coeff');
+    lags_sec = lags_ach/Fs;
+    plot(lags_sec, cc_ach, 'b', 'LineWidth', 1.5); hold on;
+    [~, peak_idx] = max(cc_ach);
+    peak_lag = lags_sec(peak_idx);
+    xline(peak_lag, '--k', sprintf('Peak lag = %.2f s', peak_lag), ...
+        'LabelOrientation','horizontal', 'LabelVerticalAlignment','bottom');
+    xlabel('Lag (s)'); ylabel('Cross-corr');
+    title(sprintf('Session-wide: HPC ACh vs LEC ACh (Peak lag = %.2f s)', peak_lag));
+    xlim([-20 20]); grid on;
+
+    subplot(2,2,2);
+    [cc_5ht, lags_5ht] = xcorr(hpc_5ht, lec_5ht, maxlag, 'coeff');
+    lags_sec = lags_5ht/Fs;
+    plot(lags_sec, cc_5ht, 'r', 'LineWidth', 1.5); hold on;
+    [~, peak_idx] = max(cc_5ht);
+    peak_lag = lags_sec(peak_idx);
+    xline(peak_lag, '--k', sprintf('Peak lag = %.2f s', peak_lag), ...
+        'LabelOrientation','horizontal', 'LabelVerticalAlignment','bottom');
+    xlabel('Lag (s)'); ylabel('Cross-corr');
+    title(sprintf('Session-wide: HPC 5-HT vs LEC 5-HT (Peak lag = %.2f s)', peak_lag));
+    xlim([-20 20]); grid on;
+
+    subplot(2,2,3);
+    [cc_hpc_within, lags_hpc_within] = xcorr(hpc_ach, hpc_5ht, maxlag, 'coeff');
+    lags_sec = lags_hpc_within/Fs;
+    plot(lags_sec, cc_hpc_within, 'm', 'LineWidth', 1.5); hold on;
+    [~, peak_idx] = max(cc_hpc_within);
+    peak_lag = lags_sec(peak_idx);
+    xline(peak_lag, '--k', sprintf('Peak lag = %.2f s', peak_lag), ...
+        'LabelOrientation','horizontal', 'LabelVerticalAlignment','bottom');
+    xlabel('Lag (s)'); ylabel('Cross-corr');
+    title(sprintf('Session-wide: HPC ACh vs HPC 5-HT (Peak lag = %.2f s)', peak_lag));
+    xlim([-20 20]); grid on;
+
+    subplot(2,2,4);
+    [cc_lec_within, lags_lec_within] = xcorr(lec_ach, lec_5ht, maxlag, 'coeff');
+    lags_sec = lags_lec_within/Fs;
+    plot(lags_sec, cc_lec_within, 'g', 'LineWidth', 1.5); hold on;
+    [~, peak_idx] = max(cc_lec_within);
+    peak_lag = lags_sec(peak_idx);
+    xline(peak_lag, '--k', sprintf('Peak lag = %.2f s', peak_lag), ...
+        'LabelOrientation','horizontal', 'LabelVerticalAlignment','bottom');
+    xlabel('Lag (s)'); ylabel('Cross-corr');
+    title(sprintf('Session-wide: LEC ACh vs LEC 5-HT (Peak lag = %.2f s)', peak_lag));
+    xlim([-20 20]); grid on;
+
+    % --- 4. Event-triggered average (aligned to trial start): ACh and 5-HT, split by outcome, percent scale ---
+    figure('Name','Event-triggered Photometry by Outcome (Trial Start, %, time-aligned)','Position',[200 200 1200 600]);
+    win_sec = 15; % window before and after event (seconds)
+    Fs = aligned.HPC_photometry.sampling_rate;
+    win_samples = round(win_sec * Fs);
+    tvec = (-win_samples:win_samples) / Fs;
+
+    fields = {'dFF_Ach_cleaned_z','dFF_FiveHT_cleaned_z'};
+    field_labels = {'ACh','5-HT'};
+    ylabels = {'\DeltaF/F (%) - ACh','\DeltaF/F (%) - 5-HT'};
+    region_labels = {'HPC','LEC'};
+    outcome_labels = {'Correct','False','Miss'};
+    colors = lines(2);
+    ylim_use = [-100 100]; % fixed y-limits for percent scale
+
+    for f = 1:2 % 1: ACh, 2: 5-HT
+        for outcome_idx = 1:3 % 1: Correct, 2: False, 3: Miss
+            subplot(2,3,(f-1)*3+outcome_idx); hold on;
+            % Always use HPC as reference timebase
+            traces_hpc = [];
+            traces_lec = [];
+            trial_inds = find(aligned.behavior.trial_labels == (outcome_idx-1));
+            for i = 1:length(trial_inds)
+                trial_num = trial_inds(i);
+                if trial_num > length(aligned.trial_start_index_hpc) || trial_num > length(aligned.trial_start_index_lec)
+                    continue
+                end
+                center_idx_hpc = aligned.trial_start_index_hpc(trial_num);
+                center_idx_lec = aligned.trial_start_index_lec(trial_num);
+                idx_range_hpc = center_idx_hpc-win_samples:center_idx_hpc+win_samples;
+                idx_range_lec = center_idx_lec-win_samples:center_idx_lec+win_samples;
+                if min(idx_range_hpc) < 1 || max(idx_range_hpc) > length(aligned.HPC_photometry_index)
+                    continue
+                end
+                if min(idx_range_lec) < 1 || max(idx_range_lec) > length(aligned.LEC_photometry_index)
+                    continue
+                end
+                % HPC trace (reference)
+                hpc_time = aligned.HPC_photometry.time_seconds(aligned.HPC_photometry_index(idx_range_hpc));
+                hpc_trace = aligned.HPC_photometry.(fields{f})(aligned.HPC_photometry_index(idx_range_hpc)) * 100;
+                traces_hpc = [traces_hpc; hpc_trace(:)'];
+                % LEC trace (interpolated onto HPC timebase)
+                lec_time = aligned.LEC_photometry.time_seconds(aligned.LEC_photometry_index(idx_range_lec)) + aligned.time_offset;
+                lec_trace_raw = aligned.LEC_photometry.(fields{f})(aligned.LEC_photometry_index(idx_range_lec)) * 100;
+                lec_trace_interp = interp1(lec_time, lec_trace_raw, hpc_time, 'linear', 'extrap');
+                traces_lec = [traces_lec; lec_trace_interp(:)'];
+            end
+            % Plot means and SEMs
+            if ~isempty(traces_hpc)
+                mtrace = mean(traces_hpc,1,'omitnan');
+                strace = std(traces_hpc,[],1,'omitnan')/sqrt(size(traces_hpc,1));
+                plot(tvec, mtrace, 'Color', colors(1,:), 'LineWidth', 2, 'DisplayName', 'HPC');
+                fill([tvec fliplr(tvec)], [mtrace+strace fliplr(mtrace-strace)], ...
+                    colors(1,:), 'FaceAlpha', 0.2, 'EdgeColor', 'none', 'HandleVisibility', 'off');
+            end
+            if ~isempty(traces_lec)
+                mtrace = mean(traces_lec,1,'omitnan');
+                strace = std(traces_lec,[],1,'omitnan')/sqrt(size(traces_lec,1));
+                plot(tvec, mtrace, 'Color', colors(2,:), 'LineWidth', 2, 'DisplayName', 'LEC');
+                fill([tvec fliplr(tvec)], [mtrace+strace fliplr(mtrace-strace)], ...
+                    colors(2,:), 'FaceAlpha', 0.2, 'EdgeColor', 'none', 'HandleVisibility', 'off');
+            end
+            xlabel('Time from trial start (s)');
+            ylabel(ylabels{f});
+            title([field_labels{f} ' - ' outcome_labels{outcome_idx}]);
+            grid on;
+            xlim([-win_sec win_sec]);
+            ylim(ylim_use);
+            if outcome_idx == 1
+                legend(region_labels, 'Location', 'best');
+            end
+        end
+    end
+
+    % --- 5. Variance Ratio Analysis (trial-to-trial variance) ---
+    figure('Name','Variance Ratio Analysis (Trial-to-Trial Variance)','Position',[300 300 700 400]);
+    win_sec = 20; % window before and after trial start (seconds)
+    Fs = aligned.HPC_photometry.sampling_rate;
+    win_samples = round(win_sec * Fs);
+
+    fields = {'dFF_Ach_cleaned_z','dFF_FiveHT_cleaned_z'};
+    field_labels = {'ACh','5-HT'};
+    outcome_labels = {'Correct','False','Miss'};
+    region_labels = {'HPC','LEC'};
+    colors = lines(2);
+
+    for f = 1:2 % 1: ACh, 2: 5-HT
+        avgmat_HPC = cell(1,3);
+        avgmat_LEC = cell(1,3);
+        for outcome_idx = 1:3
+            trial_inds = find(aligned.behavior.trial_labels == (outcome_idx-1));
+            avg_HPC = [];
+            avg_LEC = [];
+            for i = 1:length(trial_inds)
+                trial_num = trial_inds(i);
+                if trial_num > length(aligned.trial_start_index_hpc) || trial_num > length(aligned.trial_start_index_lec)
+                    continue
+                end
+                center_idx_hpc = aligned.trial_start_index_hpc(trial_num);
+                center_idx_lec = aligned.trial_start_index_lec(trial_num);
+                idx_range_hpc = center_idx_hpc-win_samples:center_idx_hpc+win_samples;
+                idx_range_lec = center_idx_lec-win_samples:center_idx_lec+win_samples;
+                if min(idx_range_hpc) < 1 || max(idx_range_hpc) > length(aligned.HPC_photometry_index)
+                    continue
+                end
+                if min(idx_range_lec) < 1 || max(idx_range_lec) > length(aligned.LEC_photometry_index)
+                    continue
+                end
+                avg_HPC = [avg_HPC; mean(aligned.HPC_photometry.(fields{f})(aligned.HPC_photometry_index(idx_range_hpc)))];
+                avg_LEC = [avg_LEC; mean(aligned.LEC_photometry.(fields{f})(aligned.LEC_photometry_index(idx_range_lec)))];
+            end
+            avgmat_HPC{outcome_idx} = avg_HPC;
+            avgmat_LEC{outcome_idx} = avg_LEC;
+        end
+
+        % Compute variance for each outcome
+        var_HPC = cellfun(@var, avgmat_HPC);
+        var_LEC = cellfun(@var, avgmat_LEC);
+        var_ratio = var_HPC ./ var_LEC;
+
+        % Plot
+        subplot(1,2,f);
+        bar(1:3, var_ratio, 0.5, 'FaceColor', [0.3 0.6 0.9]);
+        set(gca, 'XTick', 1:3, 'XTickLabel', outcome_labels);
+        ylabel(['Variance Ratio (HPC / LEC)']);
+        title(['Variance Ratio: ' field_labels{f}]);
+        ylim([0 max(2, ceil(max(var_ratio)*1.1))]);
+        grid on;
+        for k = 1:3
+            text(k, var_ratio(k)+0.05, sprintf('%.2f', var_ratio(k)), 'HorizontalAlignment','center');
+        end
+    end
+
+    % --- 6. Decay Rate Analysis (tau) for all signals and regions ---
+    figure('Name','Decay Rate Analysis (Event-triggered, Trial Start)','Position',[200 200 1200 600]);
+    win_sec = 15; % window before and after event (seconds)
+    Fs = aligned.HPC_photometry.sampling_rate;
+    win_samples = round(win_sec * Fs);
+    tvec = (-win_samples:win_samples) / Fs;
+
+    fields = {'dFF_Ach_cleaned_z','dFF_FiveHT_cleaned_z'};
+    field_labels = {'ACh','5-HT'};
+    region_labels = {'HPC','LEC'};
+    outcome_labels = {'Correct','False','Miss'};
+    colors = lines(2);
+
+    for f = 1:2 % 1: ACh, 2: 5-HT
+        for region_idx = 1:2
+            for outcome_idx = 1:3
+                subplot(4,3,(f-1)*6 + (region_idx-1)*3 + outcome_idx); hold on;
+                if region_idx == 1
+                    phot = aligned.HPC_photometry;
+                    idx_vec = aligned.HPC_photometry_index;
+                    trial_start_index = aligned.trial_start_index_hpc;
+                else
+                    phot = aligned.LEC_photometry;
+                    idx_vec = aligned.LEC_photometry_index;
+                    trial_start_index = aligned.trial_start_index_lec;
+                end
+                traces = [];
+                trial_inds = find(aligned.behavior.trial_labels == (outcome_idx-1));
+                for i = 1:length(trial_inds)
+                    trial_num = trial_inds(i);
+                    if trial_num > length(trial_start_index)
+                        continue
+                    end
+                    center_idx = trial_start_index(trial_num);
+                    idx_range = center_idx-win_samples:center_idx+win_samples;
+                    if min(idx_range) < 1 || max(idx_range) > length(idx_vec)
+                        continue
+                    end
+                    trace = phot.(fields{f})(idx_vec(idx_range));
+                    traces = [traces; trace(:)'];
+                end
+                if isempty(traces)
+                    title([region_labels{region_idx} ' ' field_labels{f} ' - ' outcome_labels{outcome_idx} ' (empty)']);
+                    continue
+                end
+                mtrace = mean(traces,1,'omitnan');
+                plot(tvec, mtrace, 'Color', colors(region_idx,:), 'LineWidth', 2);
+
+                % Find peak after t=0 and fit exponential decay
+                zero_idx = find(tvec >= 0, 1, 'first');
+                [~, peak_idx_rel] = max(mtrace(zero_idx:end));
+                peak_idx = zero_idx + peak_idx_rel - 1;
+                fit_range = peak_idx : min(peak_idx+round(5*Fs), length(tvec)); % fit 5s after peak
+                t_fit = tvec(fit_range) - tvec(peak_idx);
+                y_fit = mtrace(fit_range);
+
+                % Only fit if enough points and y decays
+                if length(t_fit) > 5 && max(y_fit) > min(y_fit)
+                    % Fit: y = A*exp(-t/tau) + C
+                    y0 = [y_fit(1)-y_fit(end), 2, y_fit(end)];
+                    decay_fun = @(b, t) b(1)*exp(-t/b(2)) + b(3);
+                    opts = statset('nlinfit');
+                    opts.RobustWgtFun = 'bisquare';
+                    try
+                        beta = nlinfit(t_fit, y_fit, decay_fun, y0, opts);
+                        tau = abs(beta(2));
+                        plot(tvec(fit_range), decay_fun(beta, t_fit), 'k--', 'LineWidth', 1.5);
+                        text(0.05, 0.9, sprintf('\\tau = %.2fs', tau), 'Units','normalized', 'FontSize',9, 'Color','k');
+                    catch
+                        % Fitting failed
+                    end
+                end
+
+                xlabel('Time from trial start (s)');
+                ylabel(['\DeltaF/F - ' field_labels{f}]);
+                title([region_labels{region_idx} ' ' field_labels{f} ' - ' outcome_labels{outcome_idx}]);
+                grid on;
+                xlim([-2 8]);
+            end
+        end
+    end
+
+    % --- 7. Time-resolved cross-correlation (sliding window CCG heatmap) ---
+    win_size = 3; % seconds
+    win_step = 0.5; % seconds
+    Fs = aligned.HPC_photometry.sampling_rate;
+    win_samples = round(win_size * Fs);
+    step_samples = round(win_step * Fs);
+    maxlag = round(5 * Fs); % 5 seconds lag for CCG
+
+    % Precompute all sliding window CCGs and find global min/max
+    avg_ccg_all = cell(2,3);
+    time_vec_all = cell(2,3);
+    lags_sec_all = cell(2,3);
+    ccg_min = inf;
+    ccg_max = -inf;
+
+    for region_idx = 1:2
+        for outcome_idx = 1:3
+            if region_idx == 1
+                region = 'HPC';
+                phot = aligned.HPC_photometry;
+                idx_vec = aligned.HPC_photometry_index;
+                trial_start_index = aligned.trial_start_index_hpc;
+            else
+                region = 'LEC';
+                phot = aligned.LEC_photometry;
+                idx_vec = aligned.LEC_photometry_index;
+                trial_start_index = aligned.trial_start_index_lec;
+            end
+
+            trial_inds = find(aligned.behavior.trial_labels == (outcome_idx-1));
+            ccg_trials = {};
+            time_trials = {};
+            max_windows = 0;
+            for i = 1:length(trial_inds)
+                trial_num = trial_inds(i);
+                if trial_num > length(trial_start_index)
+                    continue
+                end
+                trial_start_idx = trial_start_index(trial_num);
+                if trial_num > length(aligned.behavior.trial_end)
+                    continue
+                end
+                trial_end_idx = trial_start_idx + ...
+                    (aligned.behavior.trial_end(trial_num) - aligned.behavior.trial_start(trial_num));
+                if isnan(trial_start_idx) || isnan(trial_end_idx) || trial_end_idx <= trial_start_idx
+                    continue
+                end
+                if trial_end_idx > length(idx_vec)
+                    continue
+                end
+                ach = phot.dFF_Ach_cleaned_z(idx_vec(trial_start_idx:trial_end_idx));
+                fiveht = phot.dFF_FiveHT_cleaned_z(idx_vec(trial_start_idx:trial_end_idx));
+                minlen = min(length(ach), length(fiveht));
+                ach = ach(1:minlen);
+                fiveht = fiveht(1:minlen);
+
+                n_points = floor((length(ach)-win_samples)/step_samples)+1;
+                if n_points < 1
+                    continue
+                end
+                ccg_mat = nan(n_points, 2*maxlag+1);
+                time_vec = nan(n_points,1);
+                for w = 1:n_points
+                    idx1 = (w-1)*step_samples+1;
+                    idx2 = idx1+win_samples-1;
+                    if idx2 > length(ach)
+                        break
+                    end
+                    ach_win = ach(idx1:idx2);
+                    fiveht_win = fiveht(idx1:idx2);
+                    [ccg, lags_] = xcorr(ach_win, fiveht_win, maxlag, 'coeff');
+                    ccg_mat(w,:) = ccg;
+                    time_vec(w) = (idx1+idx2)/2/Fs; % time in trial (s)
+                end
+                % Only add if correct size
+                if size(ccg_mat,2) == 2*maxlag+1 && size(ccg_mat,1) > 0
+                    ccg_trials{end+1} = ccg_mat;
+                    time_trials{end+1} = time_vec;
+                    if size(ccg_mat,1) > max_windows
+                        max_windows = size(ccg_mat,1);
+                    end
+                end
+            end
+            if isempty(ccg_trials)
+                avg_ccg_all{region_idx, outcome_idx} = [];
+                time_vec_all{region_idx, outcome_idx} = [];
+                lags_sec_all{region_idx, outcome_idx} = [];
+                continue
+            end
+            % Pad all ccg_trials and time_trials to max_windows with NaN
+            n_lags = 2*maxlag+1;
+            n_trials = numel(ccg_trials);
+            ccg_stack = nan(max_windows, n_lags, n_trials);
+            time_stack = nan(max_windows, n_trials);
+            for k = 1:n_trials
+                this_ccg = ccg_trials{k};
+                this_time = time_trials{k};
+                n_win = size(this_ccg,1);
+                ccg_stack(1:n_win,:,k) = this_ccg;
+                time_stack(1:n_win,k) = this_time;
+            end
+
+            % Use mean time vector (ignoring NaNs)
+            time_vec = nanmean(time_stack,2);
+            avg_ccg = nanmean(ccg_stack,3);
+            lags_sec = lags_/Fs;
+
+            avg_ccg_all{region_idx, outcome_idx} = avg_ccg;
+            time_vec_all{region_idx, outcome_idx} = time_vec;
+            lags_sec_all{region_idx, outcome_idx} = lags_sec;
+
+            ccg_min = min(ccg_min, min(avg_ccg(:)));
+            ccg_max = max(ccg_max, max(avg_ccg(:)));
+        end
+    end
+
+    % --- Now plot all with fixed color scale ---
+    figure('Name','Time-resolved Cross-correlation (Sliding Window)','Position',[100 100 1200 600]);
+    for region_idx = 1:2
+        for outcome_idx = 1:3
+            subplot(2,3,(region_idx-1)*3+outcome_idx);
+            avg_ccg = avg_ccg_all{region_idx, outcome_idx};
+            time_vec = time_vec_all{region_idx, outcome_idx};
+            lags_sec = lags_sec_all{region_idx, outcome_idx};
+            if isempty(avg_ccg)
+                title('Empty');
+                continue
+            end
+            imagesc(time_vec, lags_sec, avg_ccg');
+            axis xy;
+            xlabel('Time in trial (s)');
+            ylabel('Lag (s)');
+            title(sprintf('%s - %s', region_labels{region_idx}, outcome_labels{outcome_idx}));
+            colorbar;
+            caxis([ccg_min ccg_max]); % fixed color scale!
+        end
+    end
+
+    % --- 8. Event-triggered averages (ETA) aligned to ACh peaks and 5-HT peaks ---
+    figure('Name','Event-triggered Averages (ETA) aligned to ACh/5-HT peaks','Position',[100 100 1200 800]);
+    peak_win = 10; % seconds before/after peak
+    Fs = aligned.HPC_photometry.sampling_rate;
+    peak_samples = round(peak_win * Fs);
+    tvec = (-peak_samples:peak_samples)/Fs;
+
+    for region_idx = 1:2
+        for outcome_idx = 1:3
+            for align_type = 1:2 % 1: align to ACh peaks, 2: align to 5-HT peaks
+                subplot(4,3,(align_type-1)*6 + (region_idx-1)*3 + outcome_idx);
+                if region_idx == 1
+                    region = 'HPC';
+                    phot = aligned.HPC_photometry;
+                    idx_vec = aligned.HPC_photometry_index;
+                    trial_start_index = aligned.trial_start_index_hpc;
+                else
+                    region = 'LEC';
+                    phot = aligned.LEC_photometry;
+                    idx_vec = aligned.LEC_photometry_index;
+                    trial_start_index = aligned.trial_start_index_lec;
+                end
+
+                trial_inds = find(aligned.behavior.trial_labels == (outcome_idx-1));
+                traces = [];
+                for i = 1:length(trial_inds)
+                    trial_num = trial_inds(i);
+                    if trial_num > length(trial_start_index)
+                        continue
+                    end
+                    trial_start_idx = trial_start_index(trial_num);
+                    if trial_num > length(aligned.behavior.trial_end)
+                        continue
+                    end
+                    trial_end_idx = trial_start_idx + ...
+                        (aligned.behavior.trial_end(trial_num) - aligned.behavior.trial_start(trial_num));
+                    if isnan(trial_start_idx) || isnan(trial_end_idx) || trial_end_idx <= trial_start_idx
+                        continue
+                    end
+                    if trial_end_idx > length(idx_vec)
+                        continue
+                    end
+                    ach = phot.dFF_Ach_cleaned_z(idx_vec(trial_start_idx:trial_end_idx));
+                    fiveht = phot.dFF_FiveHT_cleaned_z(idx_vec(trial_start_idx:trial_end_idx));
+                    minlen = min(length(ach), length(fiveht));
+                    ach = ach(1:minlen);
+                    fiveht = fiveht(1:minlen);
+
+                    % Detect peaks
+                    if align_type == 1
+                        [pks, locs] = findpeaks(ach, 'MinPeakProminence', 1, 'MinPeakDistance', Fs);
+                        align_signal = fiveht;
+                    else
+                        [pks, locs] = findpeaks(fiveht, 'MinPeakProminence', 1, 'MinPeakDistance', Fs);
+                        align_signal = ach;
+                    end
+
+                    for pk = 1:length(locs)
+                        idx = locs(pk);
+                        idx_range = idx-peak_samples:idx+peak_samples;
+                        if min(idx_range) < 1 || max(idx_range) > length(align_signal)
+                            continue
+                        end
+                        traces = [traces; align_signal(idx_range)'];
+                    end
+                end
+                if isempty(traces)
+                    title([region ' ' outcome_labels{outcome_idx} ' (empty)']);
+                    continue
+                end
+                mtrace = mean(traces,1,'omitnan');
+                strace = std(traces,[],1,'omitnan')/sqrt(size(traces,1));
+                plot(tvec, mtrace, 'LineWidth', 2);
+                fill([tvec fliplr(tvec)], [mtrace+strace fliplr(mtrace-strace)], ...
+                    'k', 'FaceAlpha', 0.2, 'EdgeColor', 'none');
+                xlabel('Time from peak (s)');
+                ylabel('Signal');
+                if align_type == 1
+                    title(sprintf('%s - %s: 5-HT aligned to ACh peaks', region, outcome_labels{outcome_idx}));
+                else
+                    title(sprintf('%s - %s: ACh aligned to 5-HT peaks', region, outcome_labels{outcome_idx}));
+                end
+                grid on;
+            end
+        end
+    end
+end
