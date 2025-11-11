@@ -1,181 +1,123 @@
-function hs_filterMUA(basepath)
-%% ================================================================
-%  filterMUA_fixed_v4.m
-%  Purpose: Extract MUA envelope (500–5000 Hz band)
-%           from a .dat file using sessionInfo structure,
-%           with automatic 300-s WAKE-epoch extraction or default 300 s.
-%  Compatible with both SleepStateEpisodes.ints.WAKEepisode
-%  and SleepState.ints.WAKE field formats.
+function hs_filterMUA(sessionPath)
+% ========================================================================
+%  funcAuto_filterMUAfromDat_v4(sessionPath)
 %
-%  Created by Husang Lee
-% ================================================================
+%  Purpose :
+%     Automatically extract & band-pass filter MUA (500–5000 Hz)
+%     from wideband .dat for the WAKE epoch of a given session.
+%
+%  Key features :
+%     • Safely clamps WAKE end to .dat file duration
+%     • Skips short (<100 s) epochs
+%     • Handles 20 kHz input → 1250 Hz downsample
+%     • Saves .MUA.mat file in session folder
+%
+%  Author : Husang (Harry) Lee, Buzsáki Lab
+%  Updated: 2025-11-11
+% ========================================================================
 
-if nargin < 1 || ~isfolder(basepath)
-    error('Basepath not provided or invalid.');
+%% --- Setup & locate files ------------------------------------------------
+if nargin < 1
+    sessionPath = pwd;
 end
-fprintf('\n📂 Processing folder: %s\n', basepath);
+cd(sessionPath);
 
-%% ----------------------------------------------------------------
-% 1️⃣  Load session information
-% -----------------------------------------------------------------
-sessionInfoFile = dir(fullfile(basepath, '*.sessionInfo.mat'));
-if isempty(sessionInfoFile)
-    error('sessionInfo.mat not found in %s', basepath);
-end
-load(fullfile(basepath, sessionInfoFile(1).name), 'sessionInfo');
+fprintf('\n📂 Processing folder: %s\n', sessionPath);
 
-datFile = dir(fullfile(basepath, '*.dat'));
+% ---- Load session info ----
+info = bz_getSessionInfo(sessionPath);
+datFile = dir('*.dat');
 if isempty(datFile)
-    error('No .dat file found in %s', basepath);
+    error('No .dat file found in %s', sessionPath);
 end
-fileDat = fullfile(basepath, datFile(1).name);
+datFilename = fullfile(sessionPath, datFile(1).name);
+fprintf('Loaded %s | %d ch | fs=%d Hz | target=%d Hz\n', ...
+    datFile(1).name, info.nChannels, info.rates.wideband, 1250);
 
-% --- sampling rate ---
-if isfield(sessionInfo, 'rates') && isfield(sessionInfo.rates, 'wideband')
-    fs = sessionInfo.rates.wideband;
-elseif isfield(sessionInfo, 'session') && isfield(sessionInfo.session, 'SampleRate')
-    fs = sessionInfo.session.SampleRate;
+%% --- Load sleep state file (WAKE epoch) ---------------------------------
+stateFile = dir('*SleepState*.mat');
+if isempty(stateFile)
+    error('No SleepState file found in %s', sessionPath);
+end
+tmp = load(stateFile(1).name);
+field = fieldnames(tmp);
+SleepState = tmp.(field{1});  % supports SleepState or SleepStateClass
+wakeEpochs = SleepState.ints.WAKEstate;
+
+if isempty(wakeEpochs)
+    warning('No WAKE epochs found. Skipping session.');
+    return;
+end
+
+%% --- Compute recording duration from .dat size --------------------------
+fileBytes = datFile(1).bytes;
+recDur_sec = fileBytes / (info.nChannels * 2 * info.rates.wideband);
+fprintf('Recording duration = %.2f s\n', recDur_sec);
+
+% Use first WAKE epoch (typical SleepScoreMaster behavior)
+wakeStart = wakeEpochs(1,1);
+wakeEnd   = wakeEpochs(1,2);
+
+% Clamp to file length
+if wakeEnd > recDur_sec
+    fprintf('⚠️  Truncating WAKE end %.2f → %.2f s (file limit)\n', ...
+        wakeEnd, recDur_sec - 0.05);
+    wakeEnd = recDur_sec - 0.05;
+end
+
+% Skip too-short epochs (<100 s)
+wakeDur = wakeEnd - wakeStart;
+if wakeDur < 100
+    fprintf('⏭️  WAKE epoch %.1f s < 100 s → skipping session.\n', wakeDur);
+    return;
 else
-    error('Sampling rate not found in sessionInfo.');
+    fprintf('Using WAKE window %.1f–%.1f s (%.1f s)\n', ...
+        wakeStart, wakeEnd, wakeDur);
 end
 
-% --- channels ---
-nChannels = sessionInfo.nChannels;
-if isfield(sessionInfo, 'channels')
-    channels = sessionInfo.channels;
-else
-    channels = 0:(nChannels-1);
-end
-targetFs = sessionInfo.lfpSampleRate;
-dsFactor = round(fs / targetFs);
+%% --- Band-pass filter MUA -----------------------------------------------
+fsIn  = info.rates.wideband;
+fsOut = 1250;
+bpFilt = designfilt('bandpassiir','FilterOrder',4, ...
+    'HalfPowerFrequency1',500,'HalfPowerFrequency2',5000, ...
+    'SampleRate',fsIn);
 
-fprintf('Loaded %s | %d ch | fs=%.0f Hz | target=%.0f Hz\n', ...
-    sessionInfoFile(1).name, nChannels, fs, targetFs);
+startSample = round(wakeStart * fsIn);
+endSample   = round(wakeEnd   * fsIn);
 
-%% ----------------------------------------------------------------
-% 2️⃣  Choose epoch (5 min default or WAKE)
-% -----------------------------------------------------------------
-defaultEpochDuration = 300;  % 5 min
-startTime = 0;               % seconds
-epochDuration = defaultEpochDuration;
-epochType = "First5min";
-
-sleepMat = dir(fullfile(basepath, '*SleepState*.mat'));   % any sleep scoring file
-if ~isempty(sleepMat)
-    fprintf('💤  Sleep state file detected → extracting WAKE epoch.\n');
-    S = load(fullfile(basepath, sleepMat(1).name));  % don't assume var name
-    wakeEpochs = getWakeEpochs_fromStruct(S);        % Nx2 in seconds
-
-    if ~isempty(wakeEpochs)
-        % pick first ≥300 s, else longest
-        longIdx = find(diff(wakeEpochs,1,2) >= defaultEpochDuration, 1);
-        if ~isempty(longIdx)
-            startTime     = wakeEpochs(longIdx,1);
-            epochDuration = defaultEpochDuration;
-        else
-            [~, idx] = max(diff(wakeEpochs,1,2));
-            startTime     = wakeEpochs(idx,1);
-            epochDuration = diff(wakeEpochs(idx,:));
-        end
-        epochType = "WAKE";
-        fprintf('Using WAKE window %.1f–%.1f s (%.1f s)\n', ...
-            startTime, startTime+epochDuration, epochDuration);
-    else
-        warning('No valid WAKE epoch found; using first 300 s.');
-    end
-else
-    fprintf('Normal session → using first 300 s window.\n');
+% Safety clamp against EOF
+maxSample = floor(fileBytes / (info.nChannels * 2));
+if endSample > maxSample
+    fprintf('⚠️  endSample > file length; truncating.\n');
+    endSample = maxSample;
 end
 
-%% ----------------------------------------------------------------
-% 3️⃣  Design band-pass filter
-% -----------------------------------------------------------------
-lowCut  = 500;  highCut = 5000;  order = 3;
-[b,a]   = butter(order, [lowCut highCut]/(fs/2), 'bandpass');
+nCh = info.nChannels;
+durationSec = (endSample - startSample) / fsIn;
+fprintf('   → Channel 1 of %d (%.1f s window)\n', nCh, durationSec);
 
-%% ----------------------------------------------------------------
-% 4️⃣  Process each channel
-% -----------------------------------------------------------------
-mua_cell = cell(numel(channels),1);
-startSample = round(startTime * fs);
-numSamples  = round(epochDuration * fs);
+% Preallocate (optional)
+chunk = endSample - startSample + 1;
+MUA_env = zeros(nCh, ceil(chunk * fsOut / fsIn), 'single');
 
-for k = 1:numel(channels)
-    ch = channels(k);
-    fprintf('   → Channel %d of %d (%.0f s window)\n', ch+1, nChannels, epochDuration);
+for ch = 1:nCh
+    try
+        sig = bz_LoadBinary(datFilename, 'nChannels', nCh, ...
+            'channels', ch-1, 'start', startSample, ...
+            'duration', durationSec, 'frequency', fsIn);
 
-    % Load only selected epoch
-    raw = bz_LoadBinary(fileDat, ...
-        'channels', ch + 1, ...    % convert 0-based → MATLAB indexing
-        'nChannels', nChannels, ...
-        'start', startSample, ...
-        'duration', numSamples, ...
-        'precision', 'int16');
-
-    % ---- filtering pipeline ----
-    sig_bp   = filtfilt(b,a,double(raw));           % band-pass
-    sig_rect = abs(sig_bp);                         % rectify
-    win      = round(fs * 0.002);                   % ~2 ms Gaussian smooth
-    sig_env  = smoothdata(sig_rect,'gaussian',win); 
-    sig_env_ds = downsample(sig_env, dsFactor);     % downsample
-    mua_cell{k} = single(sig_env_ds);
-end
-
-%% ----------------------------------------------------------------
-% 5️⃣  Combine & save
-% -----------------------------------------------------------------
-minLen = min(cellfun(@numel, mua_cell));
-MUA.data     = zeros(minLen, numel(channels), 'single');
-for k = 1:numel(channels)
-    MUA.data(:,k) = mua_cell{k}(1:minLen);
-end
-MUA.fs        = targetFs;
-MUA.band      = [lowCut highCut];
-MUA.channels  = channels;
-MUA.epoch.startSec     = startTime;
-MUA.epoch.durationSec  = epochDuration;
-MUA.epoch.type         = epochType;
-
-outFile = fullfile(basepath, [sessionInfo.FileName '.MUA.mat']);
-save(outFile,'MUA','-v7.3');
-fprintf('✅  Saved %s\n', outFile);
-
-%% ----------------------------------------------------------------
-% 6️⃣  Optional quick plot
-% -----------------------------------------------------------------
-if usejava('desktop')
-    figure('Name','MUA Envelope','Color','w');
-    imagesc(zscore(MUA.data,[],1)'); axis xy;
-    xlabel('Time (samples)'); ylabel('Channel (superficial → deep)');
-    title(sprintf('MUA Envelope (%d–%d Hz) [%s %.0f s]', ...
-        lowCut, highCut, string(MUA.epoch.type), MUA.epoch.durationSec));
-    colormap jet; colorbar;
-end
-end
-
-%% ================================================================
-function wakeEpochs = getWakeEpochs_fromStruct(S)
-% Helper: return [N x 2] WAKE intervals (seconds)
-wakeEpochs = [];
-
-% Case A: SleepStateEpisodes.ints.WAKEepisode
-if isfield(S,'SleepStateEpisodes') && isfield(S.SleepStateEpisodes,'ints')
-    ints = S.SleepStateEpisodes.ints;
-    if isfield(ints,'WAKEepisode') && ~isempty(ints.WAKEepisode)
-        wakeEpochs = double(ints.WAKEepisode);
-        return;
+        sigF = filtfilt(bpFilt, double(sig));
+        sigD = resample(sigF, fsOut, fsIn);
+        MUA_env(ch,:) = abs(hilbert(sigD)); % envelope
+    catch ME
+        warning('Error on ch %d: %s', ch, ME.message);
     end
 end
 
-% Case B: SleepState.ints.WAKE or similar
-if isfield(S,'SleepState') && isfield(S.SleepState,'ints')
-    ints = S.SleepState.ints;
-    for cand = {'WAKE','WAKEstate','WAKEepochs'}
-        f = cand{1};
-        if isfield(ints,f) && ~isempty(ints.(f))
-            wakeEpochs = double(ints.(f));
-            return;
-        end
-    end
-end
+%% --- Save output ---------------------------------------------------------
+saveName = fullfile(sessionPath, ...
+    sprintf('%s.MUA.mat', info.session.name));
+save(saveName, 'MUA_env', 'fsOut', 'wakeStart', 'wakeEnd', '-v7.3');
+fprintf('💾 Saved %s\n', saveName);
+
 end
