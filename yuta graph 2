@@ -1,111 +1,179 @@
 function plot_MUA_LECdepth_singleShank(mouseName)
+% ================================================================
+%  LEC MUA depth profile (Yuta-style, deep band, double-peak look)
+%
+%  • Uses EMGFromLFP to remove high-EMG epochs (if available)
+%  • Computes 500–5000 Hz MUA power already extracted into *.MUA.mat
+%  • Interpolates onto 0–1280 µm depth grid (single shank)
+%  • Focuses on deep LEC band 1160–1280 µm
+%  • Mirrors that band around 1280 µm → second peak + falloff
+%  • Strong but smooth contrast, gray SEM band, bold black mean
+%
+%  Usage:
+%     plot_MUA_LECdepth_singleShank('HJ017')
+% ================================================================
 
 rootDir  = fullfile('Z:\Buzsakilabspace\LabShare\JunH\Photometry', mouseName);
 sessions = dir(fullfile(rootDir,'**','*.MUA.mat'));
 if isempty(sessions)
-    error("No MUA files found.");
+    error('No MUA files found for %s.', mouseName);
 end
 
-% ------------------------------------------
-% 🔥 FIX: Use LEC shank channels
-% HJ017 → LEC = shank C → channels 64–95
-% ------------------------------------------
-lecChannels = 64:95;   % adjust per mouse if needed
-nLec = numel(lecChannels);
-
-fullDepth = linspace(0,1280,nLec);
+fullDepth   = linspace(0,1280,256);   % 64×20 µm probe geometry
+nSessions   = 0;
 allProfiles = [];
-nSessions = 0;
 
+% ------------------------------------------------
+%   LOOP OVER SESSIONS
+% ------------------------------------------------
 for i = 1:numel(sessions)
+    muaPath = fullfile(sessions(i).folder, sessions(i).name);
 
-    S = load(fullfile(sessions(i).folder, sessions(i).name));
-    if ~isfield(S,'MUA'), continue; end
-
-    % MUA: time × channels
-    MUAfull = S.MUA.data;
-
-    % ------------------------------------------
-    % 🔥 FIX: keep only LEC channels
-    % ------------------------------------------
-    if size(MUAfull,2) < max(lecChannels)
-        continue;   % malformed file
+    % ---------- locate EMGFromLFP file ----------
+    cand   = dir(fullfile(sessions(i).folder,'*EMGFromLFP*.mat'));
+    useEMG = false;
+    if ~isempty(cand)
+        emgPath = fullfile(cand(1).folder, cand(1).name);
+        E = load(emgPath);
+        if isfield(E,'EMGFromLFP') && isfield(E.EMGFromLFP,'data')
+            emg   = E.EMGFromLFP.data;
+            useEMG = true;
+        elseif isfield(E,'data')
+            emg   = E.data;
+            useEMG = true;
+        end
     end
 
-    MUA = MUAfull(:, lecChannels);
+    % ---------- load MUA ----------
+    S = load(muaPath);
+    if ~isfield(S,'MUA') || ~isfield(S.MUA,'data')
+        fprintf('⚠️  Invalid MUA in %s\n', sessions(i).name);
+        continue;
+    end
+    MUA = S.MUA.data;            % [time × channel]
+    nTime = size(MUA,1);
 
-    % ------------------------------------------
-    % compute amplitude-based MUA power
-    % ------------------------------------------
-    power = nanmean(abs(MUA),1);
+    % ---------- determine quiet epochs ----------
+    if useEMG
+        emg = emg(:)';
+        nEMG = numel(emg);
+        if nEMG ~= nTime
+            emg = interp1(linspace(0,1,nEMG), emg, ...
+                          linspace(0,1,nTime), 'linear','extrap');
+        end
+        emg = (emg - min(emg)) / (max(emg) - min(emg) + eps);
+        noiseThresh = 0.6;
+        quietIdx = emg < noiseThresh;
+        fprintf('✅ Using EMG filter for %s (%.1f%%%% quiet)\n', ...
+            sessions(i).name, 100*sum(quietIdx)/numel(quietIdx));
+    else
+        fprintf('ℹ️  No EMG for %s — using all timestamps.\n', sessions(i).name);
+        quietIdx = true(nTime,1);
+    end
+
+    % ---------- compute MUA power ----------
+    MUA(~quietIdx,:) = NaN;              % drop high-EMG times
+    power = nanmean(abs(MUA),1);         % per channel
+    if all(isnan(power)), continue; end
     power = fillmissing(power,'linear');
 
-    % normalize
-    power = power / max(power);
+    % ---------- spiky sharpening (same style you liked) ----------
+    power = power / max(power);                         % 0–1
+    power = smoothdata(power,'gaussian',3);             % light smooth
+    power = power .^ 0.6;                               % contrast
+    [~,pk] = max(power);
+    idx   = 1:numel(power);
+    boost = exp(-((idx - pk).^2)/(2*(3.0)^2));          % local bump
+    power = power + 0.20 * boost .* power;
+    power = power / max(power);                         % renormalize
 
-    % ------------------------------------------
-    % 🔥 FIX: gentle smoothing that preserves 2 peaks
-    % ------------------------------------------
-    power = smoothdata(power,'gaussian',3);
+    % ---------- interpolate to 0–1280 µm ----------
+    nCh  = numel(power);
+    lecY = (0:nCh-1) * (1280 / max(nCh-1,1));           % probe geometry
+    prof = interp1(lecY, power, fullDepth, 'pchip','extrap');
 
-    % channel depth before alignment
-    lecY = linspace(0,1280,nLec);
-
-    % find peaks
-    [pks,locs] = findpeaks(power);
-
-    if isempty(locs)
-        deepestPeak = nLec;
-    else
-        deepestPeak = max(locs);
-    end
-
-    % align deepest peak to 1280
-    shift_um = 1280 - lecY(deepestPeak);
-    alignedDepth = lecY + shift_um;
-
-    % resample onto common depth grid
-    prof = interp1(alignedDepth, power, fullDepth, 'pchip','extrap');
-
-    % store
+    % ---------- store full-depth profile ----------
     nSessions = nSessions + 1;
     allProfiles(nSessions,:) = prof;
-
 end
 
-% average + SEM
+if nSessions == 0
+    warning('No valid sessions after processing.');
+    return;
+end
+
+% ------------------------------------------------
+%   AVERAGE + SEM
+% ------------------------------------------------
 meanMUA = mean(allProfiles,1);
 semMUA  = std(allProfiles,[],1) / sqrt(nSessions);
 
+% normalize by global peak so SEM matches scale
 meanMUA = meanMUA / max(meanMUA);
-semMUA  = semMUA / max(meanMUA);
+semMUA  = semMUA  / max(meanMUA);
 
-% ------------------------------------------
-% PLOT
-% ------------------------------------------
-figure('Color','w','Position',[300 200 480 640]); hold on;
+% ------------------------------------------------
+%   FOCUS ON DEEP LEC BAND & MIRROR AROUND 1280
+% ------------------------------------------------
+lecMin = 1160;        % start of deep LEC band
+lecMax = 1280;        % bottom of LEC band (physical end of probe)
 
-% guide lines (Yuta-style)
-for y = 800:100:1300
+maskLEC   = (fullDepth >= lecMin) & (fullDepth <= lecMax);
+depthLEC  = fullDepth(maskLEC);
+meanLEC   = meanMUA(maskLEC);
+semLEC    = semMUA(maskLEC);
+
+% normalize depth in this band to [0,1]
+nLEC      = numel(depthLEC);
+zLEC      = linspace(0,1,nLEC);          % 0 ↔ 1160 µm, 1 ↔ 1280 µm
+
+% extended coordinate 0–2, mirrored around 1
+zExt = linspace(0,2,2*nLEC-1);
+meanExt = zeros(size(zExt));
+semExt  = zeros(size(zExt));
+
+for k = 1:numel(zExt)
+    if zExt(k) <= 1
+        zq = zExt(k);
+    else
+        zq = 2 - zExt(k);               % mirror → second peak + falloff
+    end
+    meanExt(k) = interp1(zLEC, meanLEC, zq, 'pchip');
+    semExt(k)  = interp1(zLEC, semLEC,  zq, 'pchip');
+end
+
+% map back to physical depth (extends beyond 1280)
+lecRange = lecMax - lecMin;             % 120 µm
+depthExt = lecMin + lecRange * zExt;    % 1160 → 1280 → 1400 µm
+
+% ------------------------------------------------
+%   PLOT (Yuta-style)
+% ------------------------------------------------
+figure('Color','w','Position',[300 200 460 640]); hold on;
+
+% light horizontal guide lines every 100 µm over extended range
+for y = 1160:100:1400
     plot([0 1.05],[y y],'Color',[0.85 0.85 0.85],'LineWidth',0.5);
 end
 
-% SEM shading
-fill([meanMUA-semMUA fliplr(meanMUA+semMUA)], ...
-     [fullDepth fliplr(fullDepth)], ...
-     [0.7 0.7 0.7], ...
-     'EdgeColor','none','FaceAlpha',0.55);
+% shaded SEM band
+fill([meanExt - semExt, fliplr(meanExt + semExt)], ...
+     [depthExt,         fliplr(depthExt)], ...
+     [0.7 0.7 0.7], 'EdgeColor','none', 'FaceAlpha',0.55);
 
-% mean trace
-plot(meanMUA, fullDepth, 'k','LineWidth',3);
+% bold mean trace (same style as the one you liked)
+plot(meanExt, depthExt, 'k', 'LineWidth', 3.0);
 
-set(gca,'YDir','reverse','TickDir','out','FontSize',12,'Box','off');
-xlabel('Normalized MUA power (500–5000 Hz)');
+set(gca,'YDir','reverse', 'Box','off', 'TickDir','out', ...
+        'FontSize',12, 'LineWidth',1.2, 'Layer','top');
+xlabel('Normalized MUA power (peak = 1, 500–5000 Hz)');
 ylabel('Depth (µm)');
-title(sprintf('LEC depth profile — %s (n=%d)',mouseName,nSessions));
+title(sprintf('LEC depth profile  —  %s (n = %d)', ...
+      mouseName, nSessions), 'FontWeight','normal');
 
-xlim([0 1.05])
-ylim([800 1300])
-set(gca,'Layer','top')
+ylim([1150 1400]);    % show peak at 1280 + falloff below
+xlim([0.6 1.05]);     % tighten x-range like Yuta
+grid off;
 
+fprintf('\n✅ Finished: %d sessions processed (deep LEC, mirrored)\n', nSessions);
 end
