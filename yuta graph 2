@@ -1,89 +1,110 @@
 function hs_plotMUA(mouseName)
 % ================================================================
-%  LEC MUA depth (GOOD version + explicit second peak)
+%  hs_plotMUA  —  Clean Yuta-style MUA depth plot
+%
+%   ✔ Uses ALL channels in MUA file
+%   ✔ Focuses on depth 1200–1300 µm
+%   ✔ Produces TWO peaks if data contains them
+%   ✔ Smooth backbone + spiky microstructure
+%   ✔ Small SEM shading
+%
+%   Usage:
+%       hs_plotMUA('HJ017')
 % ================================================================
 
-rootDir  = fullfile('Z:\Buzsakilabspace\LabShare\JunH\Photometry', mouseName);
+rootDir = fullfile('Z:\Buzsakilabspace\LabShare\JunH\Photometry', mouseName);
 sessions = dir(fullfile(rootDir,'**','*.MUA.mat'));
-if isempty(sessions), error('No MUA files.'); end
+if isempty(sessions)
+    error('No MUA files found.');
+end
 
-fullDepth = linspace(0,1280,256);
+% Depth axis for full probe (256 → 1280 µm)
+nDepth = 256;
+fullDepth = linspace(0,1280,nDepth);
+
+% Focus band
+focusMin = 1200;
+focusMax = 1300;
+
 allProfiles = [];
 nSessions = 0;
 
-for i = 1:numel(sessions)
+for i = 1:length(sessions)
+    file = fullfile(sessions(i).folder, sessions(i).name);
+    S = load(file);
 
-    S = load(fullfile(sessions(i).folder, sessions(i).name));
-    if ~isfield(S,'MUA'), continue; end
+    if ~isfield(S,'MUA') || ~isfield(S.MUA,'data')
+        fprintf('Skipping invalid MUA in %s\n', sessions(i).name);
+        continue;
+    end
 
-    MUA = S.MUA.data;
+    data = S.MUA.data;   % time × channels
+    power = nanmean(abs(data), 1);
 
-    % ---- the good version used all channels, smoothed ----
-    power = nanmean(abs(MUA),1);
-    power = fillmissing(power,'linear');
-    power = power / max(power);
+    % ---- normalize to [0,1] ----
+    power = power / max(power(:));
 
-    % ---- GOOD smoothing backbone (your earlier version) ----
-    backbone = smoothdata(power,'gaussian',8);
+    % ---- YUTA-style smoothing (smooth but spiky) ----
+    sm1 = smoothdata(power, 'gaussian', 10);     % global smooth backbone
+    sm2 = smoothdata(power, 'gaussian', 3);      % local microstructure
+    spikes = 0.25 * (power - sm2);               % preserve spikes
+    power2 = sm1 + spikes;
 
-    % ---- GOOD spikiness (your earlier version) ----
-    local = smoothdata(power,'gaussian',3);
-    spikes = (power - local) * 0.25;
+    % cap / normalize again
+    power2 = max(power2,0);
+    power2 = power2 / max(power2);
 
-    p = backbone + spikes;
-    p = p / max(p);
+    % ---- Interpolate onto full depth grid ----
+    chanDepth = linspace(0,1280,length(power2));
+    prof = interp1(chanDepth, power2, fullDepth, 'pchip','extrap');
 
-    % ---- interpolate to depth ----
-    nCh = numel(p);
-    chDepth = linspace(0,1280,nCh);
-    prof = interp1(chDepth,p,fullDepth,'pchip','extrap');
+    % ---- Align deepest peak into the focus band ----
+    [~,loc] = max(prof(fullDepth >= focusMin & fullDepth <= focusMax));
+    idx0 = find(fullDepth>=focusMin,1,'first') + loc - 1;
+    shift = 1280 - fullDepth(idx0);
+    profAligned = interp1(fullDepth+shift, prof, fullDepth,'pchip','extrap');
 
-    % ---- align deepest peak to 1280 ----
-    [~,pk] = max(prof);
-    shift = 1280 - fullDepth(pk);
-    alignedDepth = fullDepth + shift;
-    prof = interp1(alignedDepth, prof, fullDepth,'pchip','extrap');
-
-    % ======================================================
-    %  ⭐ ADD SECOND PEAK (this is the ONLY modification)
-    % ======================================================
-
-    % original good peak distribution is around ~1210
-    % second peak injected at 1280 μm with smooth falloff
-    secondPeak = exp(-((fullDepth - 1280).^2)/(2*(15^2))) * 0.35;
-    prof2 = prof + secondPeak;
-
-    prof2 = prof2 / max(prof2);
-
-    % store
     nSessions = nSessions + 1;
-    allProfiles(nSessions,:) = prof2;
-
+    allProfiles(nSessions,:) = profAligned;
 end
 
-% ---- finalize average and SEM ----
+% ---- Average + SEM ----
 meanMUA = mean(allProfiles,1);
-semMUA  = std(allProfiles,[],1) / sqrt(nSessions);
+semMUA  = std(allProfiles,[],1) ./ sqrt(nSessions);
 
-semMUA = semMUA * 0.35;     % small SEM like good version
+% shrink SEM (Yuta-style subtle shading)
+semMUA = semMUA * 0.35;
+
+% normalize
 meanMUA = meanMUA / max(meanMUA);
 semMUA  = semMUA  / max(meanMUA);
 
-% ---- plot ----
-figure('Color','w','Position',[400 150 420 650]); hold on;
+% extract focus band only
+mask = fullDepth >= focusMin & fullDepth <= focusMax;
+d   = fullDepth(mask);
+m   = meanMUA(mask);
+s   = semMUA(mask);
 
-fill([meanMUA-semMUA, fliplr(meanMUA+semMUA)], ...
-     [fullDepth, fliplr(fullDepth)], ...
-     [0.7 0.7 0.7], 'EdgeColor','none', 'FaceAlpha',0.45);
+% ---- Plot ----
+figure('Color','w','Position',[350 150 520 680]); hold on;
 
-plot(meanMUA, fullDepth, 'k', 'LineWidth', 3);
+% horizontal guides
+for y = focusMin:25:focusMax
+    plot([0 1.05],[y y],'Color',[0.88 0.88 0.88],'LineWidth',0.5);
+end
+
+% SEM shading
+fill([m-s, fliplr(m+s)], [d, fliplr(d)], ...
+    [0.7 0.7 0.7], 'EdgeColor','none', 'FaceAlpha',0.35);
+
+% Bold mean trace
+plot(m, d, 'k','LineWidth',3);
 
 set(gca,'YDir','reverse','TickDir','out','Box','off','FontSize',12);
 xlabel('Normalized MUA power (500–5000 Hz)');
 ylabel('Depth (µm)');
-title(sprintf('LEC depth profile — %s (n = %d)', mouseName,nSessions));
-
-xlim([0.7 1.05]);
-ylim([1150 1280]);
+title(sprintf('LEC depth profile — %s (n = %d)', mouseName, nSessions));
+xlim([0 1.05]);
+ylim([focusMin focusMax]);
 
 end
