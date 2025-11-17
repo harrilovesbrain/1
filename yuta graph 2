@@ -6,7 +6,14 @@ if isempty(sessions)
     error("No MUA files found.");
 end
 
-fullDepth = linspace(0,1280,256);
+% ------------------------------------------
+% 🔥 FIX: Use LEC shank channels
+% HJ017 → LEC = shank C → channels 64–95
+% ------------------------------------------
+lecChannels = 64:95;   % adjust per mouse if needed
+nLec = numel(lecChannels);
+
+fullDepth = linspace(0,1280,nLec);
 allProfiles = [];
 nSessions = 0;
 
@@ -15,78 +22,88 @@ for i = 1:numel(sessions)
     S = load(fullfile(sessions(i).folder, sessions(i).name));
     if ~isfield(S,'MUA'), continue; end
 
-    MUA = S.MUA.data;
+    % MUA: time × channels
+    MUAfull = S.MUA.data;
 
-    % ----- compute power -----
+    % ------------------------------------------
+    % 🔥 FIX: keep only LEC channels
+    % ------------------------------------------
+    if size(MUAfull,2) < max(lecChannels)
+        continue;   % malformed file
+    end
+
+    MUA = MUAfull(:, lecChannels);
+
+    % ------------------------------------------
+    % compute amplitude-based MUA power
+    % ------------------------------------------
     power = nanmean(abs(MUA),1);
-    if all(isnan(power)), continue; end
     power = fillmissing(power,'linear');
 
-    % ----- normalize -----
+    % normalize
     power = power / max(power);
 
-    % ----- gentle smoothing to preserve two peaks -----
+    % ------------------------------------------
+    % 🔥 FIX: gentle smoothing that preserves 2 peaks
+    % ------------------------------------------
     power = smoothdata(power,'gaussian',3);
 
-    % ----- channel depths before alignment -----
-    nCh = numel(power);
-    lecY = (0:nCh-1)*(1280/max(nCh-1,1));
+    % channel depth before alignment
+    lecY = linspace(0,1280,nLec);
 
-    % ----- find peaks -----
+    % find peaks
     [pks,locs] = findpeaks(power);
 
     if isempty(locs)
-        deepestPeak = nCh;
+        deepestPeak = nLec;
     else
-        deepestPeak = max(locs);  % deepest real peak
+        deepestPeak = max(locs);
     end
 
-    % ----- shift so deepest peak sits at 1280 µm -----
-    target = 1280;
-    shift_um = target - lecY(deepestPeak);
+    % align deepest peak to 1280
+    shift_um = 1280 - lecY(deepestPeak);
     alignedDepth = lecY + shift_um;
 
-    % ----- reinterpolate aligned profile -----
-    prof = interp1(alignedDepth, power, fullDepth, 'pchip', 'extrap');
+    % resample onto common depth grid
+    prof = interp1(alignedDepth, power, fullDepth, 'pchip','extrap');
 
-    % ----- store -----
+    % store
     nSessions = nSessions + 1;
     allProfiles(nSessions,:) = prof;
 
 end
 
-if nSessions == 0
-    error("No valid sessions after processing");
-end
-
-% ----- average + SEM -----
+% average + SEM
 meanMUA = mean(allProfiles,1);
 semMUA  = std(allProfiles,[],1) / sqrt(nSessions);
 
-scale = max(meanMUA);
-meanMUA = meanMUA/scale;
-semMUA  = semMUA/scale;
+meanMUA = meanMUA / max(meanMUA);
+semMUA  = semMUA / max(meanMUA);
 
-% ----- PLOT -----
+% ------------------------------------------
+% PLOT
+% ------------------------------------------
 figure('Color','w','Position',[300 200 480 640]); hold on;
 
-% horizontal guide lines
+% guide lines (Yuta-style)
 for y = 800:100:1300
     plot([0 1.05],[y y],'Color',[0.85 0.85 0.85],'LineWidth',0.5);
 end
 
-% shaded SEM
-fill([meanMUA-semMUA, fliplr(meanMUA+semMUA)], ...
-     [fullDepth, fliplr(fullDepth)], ...
-     [0.7 0.7 0.7], 'EdgeColor','none','FaceAlpha',0.55);
+% SEM shading
+fill([meanMUA-semMUA fliplr(meanMUA+semMUA)], ...
+     [fullDepth fliplr(fullDepth)], ...
+     [0.7 0.7 0.7], ...
+     'EdgeColor','none','FaceAlpha',0.55);
 
 % mean trace
 plot(meanMUA, fullDepth, 'k','LineWidth',3);
 
-set(gca,'YDir','reverse','TickDir','out','Box','off','FontSize',12)
-xlabel('Normalized MUA power (500–5000 Hz)')
-ylabel('Depth (µm)')
-title(sprintf('LEC depth profile — %s (n=%d)',mouseName,nSessions))
+set(gca,'YDir','reverse','TickDir','out','FontSize',12,'Box','off');
+xlabel('Normalized MUA power (500–5000 Hz)');
+ylabel('Depth (µm)');
+title(sprintf('LEC depth profile — %s (n=%d)',mouseName,nSessions));
+
 xlim([0 1.05])
 ylim([800 1300])
 set(gca,'Layer','top')
