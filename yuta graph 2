@@ -2,194 +2,192 @@ function hs_plotMUA(mouseName)
 % ================================================================
 %  hs_plotMUA(mouseName)
 %
-%  LEC-like MUA depth profile (Yuta-style)
-%  --------------------------------------
-%  • Uses all *.MUA.mat files under:
-%        Z:\Buzsakilabspace\LabShare\JunH\Photometry\[mouseName]
-%  • EMG-based quiet-epoch selection if EMGFromLFP is present
-%  • Per-channel MUA "power" = mean(|MUA|) over quiet timestamps
-%  • Nonlinear enhancement:
-%       - Gaussian smoothing (σ ≈ 2–3 channels)
-%       - Power-law contrast (γ ≈ 0.6)
-%       - Mild exponential peak sharpening
-%  • Interpolates to 0–1280 µm depth grid (64×20 µm geometry)
-%  • Averages across sessions + SEM band (shrunken)
-%  • Plots deep band (~1160–1300 µm) so two peaks can show
+%  LEC MUA depth profile (Yuta-style, using XML geometry)
+%  - Uses channels 128–255 from geometry XML (LEC shanks)
+%  - Uses all timestamps (NO EMG gating)
+%  - 500–5000 Hz MUA power is assumed already in MUA.data
+%  - Keeps original smooth shape, adds only fine spikiness
+%  - Smaller SEM shadow
 %
-%  Author : Husang (Harry) Lee (Buzsáki Lab) 
-%  Updated: 2025-11-17
+%  Example:
+%     hs_plotMUA('HJ017')
 % ================================================================
 
-%% ---------- locate MUA files ----------
+% ---------- locate all MUA files ----------
 rootDir  = fullfile('Z:\Buzsakilabspace\LabShare\JunH\Photometry', mouseName);
 sessions = dir(fullfile(rootDir,'**','*.MUA.mat'));
 if isempty(sessions)
-    error('No MUA files found for %s under %s', mouseName, rootDir);
+    error('No MUA files found for %s.', mouseName);
 end
 
-% depth grid we will interpolate onto (assume 64 ch × 20 µm)
-fullDepth   = linspace(0,1280,256);
-nSessions   = 0;
-allProfiles = [];
+% ---------- load XML geometry ONCE ----------
+persistent lecCh lecDepth
+if isempty(lecCh) || isempty(lecDepth)
+    xmlFiles = dir(fullfile(rootDir,'**','*.xml'));
+    if isempty(xmlFiles)
+        error('No XML geometry found under %s', rootDir);
+    end
 
-fprintf('\n===============================\n');
-fprintf('🐭 hs_plotMUA for mouse %s\n', mouseName);
-fprintf('Found %d MUA files.\n', numel(sessions));
-fprintf('===============================\n\n');
+    xmlPath = fullfile(xmlFiles(1).folder, xmlFiles(1).name);
+    S = readstruct(xmlPath);
+    if ~isfield(S,'channelCoordinates')
+        error('XML %s has no channelCoordinates field.', xmlPath);
+    end
+
+    ch  = [];
+    dep = [];
+    for iSh = 1:numel(S.channelCoordinates.shank)
+        CC = S.channelCoordinates.shank(iSh).channelCoordinate;
+        for k = 1:numel(CC)
+            ch(end+1)  = CC(k).channel;   %#ok<AGROW>
+            dep(end+1) = CC(k).y;         %#ok<AGROW>  % depth in µm
+        end
+    end
+
+    % Use LEC range: hardware channels 128–255
+    lecMask  = (ch >= 128) & (ch <= 255);
+    lecCh    = ch(lecMask);
+    lecDepth = dep(lecMask);
+
+    % sort by depth (superficial→deep)
+    [lecDepth, idx] = sort(lecDepth(:));
+    lecCh           = lecCh(idx);
+
+    % shift so deepest contact ~1280 µm (XML max is 1260)
+    lecDepth = lecDepth + (1280 - max(lecDepth));
+    fprintf('📡 Using geometry from %s (LEC 128–255, %d chans)\n', ...
+            xmlPath, numel(lecCh));
+end
+
+% ---------- depth grid for interpolation: FULL LEC RANGE ----------
+fullDepth = linspace(min(lecDepth), max(lecDepth), 256);
+
+% ---------- accumulate profiles ----------
+allProfiles = [];
+nSessions   = 0;
 
 for i = 1:numel(sessions)
     muaPath = fullfile(sessions(i).folder, sessions(i).name);
-    [~, fname] = fileparts(muaPath);
-    fprintf('▶ Processing %s\n', fname);
-
-    %% ---------- load MUA ----------
     S = load(muaPath);
     if ~isfield(S,'MUA') || ~isfield(S.MUA,'data')
-        fprintf('  ⚠️  Invalid MUA format in %s — skipping.\n', fname);
+        fprintf('⚠️  Invalid MUA in %s → skipping\n', sessions(i).name);
         continue;
     end
-    MUA = S.MUA.data;     % [time x channels]
-    if isempty(MUA) || size(MUA,2) < 4
-        fprintf('  ⚠️  Not enough channels — skipping.\n');
+
+    MUA = S.MUA.data;          % [time × channels]
+    [~, nCh] = size(MUA);
+
+    % columns corresponding to LEC hardware channels 128–255
+    % (hardware channels are 0-based; +1 to convert to MATLAB columns)
+    lecCols = lecCh + 1;
+    lecCols = lecCols(lecCols >= 1 & lecCols <= nCh);
+    if numel(lecCols) < 10
+        fprintf('⚠️  Not enough LEC channels in %s → skipping\n', sessions(i).name);
         continue;
     end
-    nCh = size(MUA,2);
 
-    %% ---------- optional EMG-based quiet epochs ----------
-    cand = dir(fullfile(sessions(i).folder,'*EMGFromLFP*.mat'));
-    useEMG = false;
-    if ~isempty(cand)
-        try
-            E = load(fullfile(cand(1).folder, cand(1).name));
-            if isfield(E,'EMGFromLFP') && isfield(E.EMGFromLFP,'data')
-                emg = E.EMGFromLFP.data;
-                useEMG = true;
-            elseif isfield(E,'data')
-                emg = E.data;
-                useEMG = true;
-            end
-        catch
-            useEMG = false;
-        end
-    end
-
-    if useEMG
-        emg = emg(:)';
-        nMUA = size(MUA,1);
-        nEMG = numel(emg);
-        if nEMG ~= nMUA
-            emg = interp1(linspace(0,1,nEMG), emg, ...
-                          linspace(0,1,nMUA), 'linear','extrap');
-        end
-        % normalize EMG 0–1
-        emg = emg - min(emg);
-        emg = emg ./ max(emg + eps);
-        noiseThresh = 0.6;
-        quietIdx    = emg < noiseThresh;
-        fprintf('  ✅ EMG filter used (%.1f%%%% quiet)\n', ...
-                100*sum(quietIdx)/numel(quietIdx));
-    else
-        quietIdx = true(size(MUA,1),1);
-        fprintf('  ℹ️  No EMG — using all timestamps.\n');
-    end
-
-    %% ---------- compute per-channel MUA power ----------
-    MUA(~quietIdx,:) = NaN;
-    power = nanmean(abs(MUA),1);     % [1 x nCh]
-    if all(isnan(power))
-        fprintf('  ⚠️  All-NaN power after EMG filter — skipping.\n');
+    % ---------- channel-wise MUA power (no EMG gating) ----------
+    power = mean(abs(MUA(:, lecCols)), 1);   % 1 × nLEC
+    if all(power == 0)
+        fprintf('⚠️  Zero power in %s → skipping\n', sessions(i).name);
         continue;
     end
-    power = fillmissing(power,'linear',2);
 
-    %% ---------- nonlinear shaping (Yuta-style-ish) ----------
-    % normalize first
-    power = power ./ max(power + eps);
+    % normalize across depth
+    power = power / max(power);
 
-    % Slightly smoother than 1-pt (σ ≈ 2–3 channels)
-    % This keeps shape smooth but spikes still visible
-    power = smoothdata(power,'gaussian',3);
+    % ============================================================
+    %   Yuta-style SPIKINESS while preserving original shape
+    % ============================================================
 
-    % Contrast enhancement (γ < 1 lifts small values)
-    gamma = 0.6;
-    power = power .^ gamma;
+    % base smooth shape (what you liked before)
+    baseSmooth = smoothdata(power, 'gaussian', 7);   % main envelope
 
-    % Mild exponential boost around main peak (not crazy)
-    [~, pk] = max(power);
-    idx     = 1:numel(power);
-    sigmaPk = 3;                     % in channels
-    boost   = exp(-((idx - pk).^2) / (2*sigmaPk^2));
-    power   = power + 0.15 * boost .* power;
+    % very slow trend (remove only ultra-slow drift)
+    slowTrend  = smoothdata(baseSmooth, 'gaussian', 21);
 
-    % renormalize to 0–1
-    power = power ./ max(power + eps);
+    % high-frequency detail (zero-mean bumps)
+    hiDetail   = baseSmooth - slowTrend;
 
-    %% ---------- map channels to depth & interpolate ----------
-    % Assume probe spans 0–1280 µm linearly across channels
-    % (equivalent to 64 x 20 µm, but works for any nCh)
-    chDepth = linspace(0,1280,nCh);
+    % add small bumps on top of base shape
+    spikeGain  = 0.6;        % <--- main "spikiness" knob (0.4–0.8)
+    powerSpiky = baseSmooth + spikeGain * hiDetail;
 
-    prof = interp1(chDepth, power, fullDepth, 'pchip', 'extrap');
+    % keep everything non-negative
+    powerSpiky = max(powerSpiky, 0);
 
-    % store profile
+    % mild contrast stretch (does NOT change ordering/shape much)
+    powerSpiky = powerSpiky .^ 0.9;
+
+    % re-normalize per session
+    powerSpiky = powerSpiky / max(powerSpiky);
+
+    % ---------- map to real depths using XML ----------
+    hwCh = lecCols - 1;                  % back to hardware channel IDs
+    [~, loc] = ismember(hwCh, lecCh);    % indices into lecCh/lecDepth
+    valid = loc > 0;
+
+    chanDepth = lecDepth(loc(valid));
+    powUsed   = powerSpiky(valid);
+
+    % make sure depths are strictly increasing for interp1
+    [chanDepth, order] = sort(chanDepth);
+    powUsed = powUsed(order);
+
+    [chanDepth, uIdx] = unique(chanDepth);
+    powUsed           = powUsed(uIdx);
+
+    % interpolate to common depth grid
+    prof = interp1(chanDepth, powUsed, fullDepth, 'pchip', 'extrap');
+
+    % store
     nSessions = nSessions + 1;
-    allProfiles(nSessions,:) = prof;
+    allProfiles(nSessions, :) = prof;
+    fprintf('   • %s (%d/%d) → included\n', sessions(i).name, nSessions, numel(sessions));
 end
 
 if nSessions == 0
-    warning('No valid sessions after processing for %s.', mouseName);
+    warning('No valid sessions after processing.');
     return;
 end
 
-%% ---------- average & SEM ----------
-meanMUA = mean(allProfiles,1);
-semMUA  = std(allProfiles,[],1) ./ sqrt(nSessions);
+% ---------- average & SEM ----------
+meanMUA = mean(allProfiles, 1);
+semMUA  = std(allProfiles, [], 1) / sqrt(nSessions);
 
-% normalize to peak = 1
-peakVal = max(meanMUA);
-meanMUA = meanMUA ./ (peakVal + eps);
-semMUA  = semMUA  ./ (peakVal + eps);
+% normalize final profile (peak = 1)
+meanMUA = meanMUA / max(meanMUA);
+semMUA  = semMUA / max(meanMUA);
 
-% shrink SEM visually (so it doesn’t swamp the trace)
-semScale = 0.55;         % you can tune 0.3–0.7
-semMUA   = semMUA * semScale;
+% ---------- plot ----------
+figure('Color','w','Position',[320 180 420 640]); hold on;
 
-%% ---------- plotting ----------
-figure('Color','w','Position',[320 120 460 640]); hold on;
-
-% focus on deep band so two peaks near ~1210 & 1280 can show
-yMin = 1160;
-yMax = 1300;
-
-% horizontal guide lines every 20 µm in the deep band
-guideYs = yMin:20:yMax;
-for y = guideYs
-    plot([0 1.05],[y y],'Color',[0.9 0.9 0.9],'LineWidth',0.5);
+% guide lines every 100 µm over full LEC range
+yMin = floor(min(fullDepth)/100)*100;
+yMax = ceil(max(fullDepth)/100)*100;
+for y = yMin:100:yMax
+    plot([0 1.05], [y y], 'Color', [0.85 0.85 0.85], 'LineWidth', 0.5);
 end
 
-% shaded SEM band
-xSem = [meanMUA - semMUA, fliplr(meanMUA + semMUA)];
-ySem = [fullDepth,        fliplr(fullDepth)];
-fill(xSem, ySem, [0.6 0.6 0.6], ...
-     'EdgeColor','none','FaceAlpha',0.30);
+% SEM shadow (small)
+semScale = 0.6;  % shrink the width of the gray band
+fill([meanMUA - semScale*semMUA, fliplr(meanMUA + semScale*semMUA)], ...
+     [fullDepth, fliplr(fullDepth)], [0.7 0.7 0.7], ...
+     'EdgeColor', 'none', 'FaceAlpha', 0.35);
 
-% bold mean trace
+% bold mean trace (same global shape, now with fine bumps)
 plot(meanMUA, fullDepth, 'k', 'LineWidth', 3);
 
-set(gca,'YDir','reverse', ...
-        'Box','off', ...
-        'TickDir','out', ...
-        'FontSize',12, ...
-        'LineWidth',1.2);
+set(gca, 'YDir', 'reverse', 'Box', 'off', 'TickDir', 'out', ...
+         'FontSize', 12, 'LineWidth', 1.2);
+xlabel('Normalized MUA power (500–5000 Hz)');
+ylabel('Depth (µm)');
+title(sprintf('LEC Depth Profile — %s (n = %d)', mouseName, nSessions), ...
+      'FontWeight', 'normal');
 
-xlabel('Normalized MUA power (500–5000 Hz)','FontSize',12);
-ylabel('Depth (µm)','FontSize',12);
-title(sprintf('LEC-like MUA depth — %s (n = %d)', mouseName, nSessions), ...
-      'FontWeight','normal','FontSize',12);
-
-ylim([yMin yMax]);
 xlim([0 1.05]);
-set(gca,'Layer','top');
+ylim([min(fullDepth) max(fullDepth)]);
+set(gca, 'Layer', 'top');
 
-fprintf('\n✅ Finished hs_plotMUA: %d sessions included.\n\n', nSessions);
+fprintf('\n✅ Finished hs_plotMUA for %s (%d sessions)\n', mouseName, nSessions);
 end
