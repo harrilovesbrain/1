@@ -16,7 +16,7 @@ function hs_plotMUA(mouseName)
 %  • Averages across sessions + SEM band (shrunken)
 %  • Plots deep band (~1160–1300 µm) so two peaks can show
 %
-%  Author : Husang (Harry) Lee (Buzsáki Lab) + ChatGPT assist
+%  Author : Husang (Harry) Lee (Buzsáki Lab) 
 %  Updated: 2025-11-17
 % ================================================================
 
